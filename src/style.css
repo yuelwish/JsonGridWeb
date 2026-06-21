@@ -158,37 +158,71 @@ body {
   overflow: hidden;
 }
 
-/* 拖拽条 */
+/* 面板间分割线 */
 .panel-resizer {
-  width: 6px;
+  width: 10px;
   background: var(--border-color);
   cursor: col-resize;
   flex-shrink: 0;
-  transition: background-color 0.2s;
   z-index: 10;
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 4px;
+  transition: background-color 0.15s;
 }
 
 .panel-resizer:hover {
-  background: #007bff;
+  background: #d1d1d6;
 }
 
-/* 拖拽条中间的小点，增加视觉反馈 */
+[data-theme="dark"] .panel-resizer:hover {
+  background: #4a5070;
+}
+
+/* 分割线中间的垂直细线 */
 .panel-resizer::before {
   content: '';
   width: 2px;
-  height: 20px;
-  background: currentColor;
-  border-radius: 2px;
-  opacity: 0.5;
+  height: 32px;
+  background: var(--text-muted);
+  border-radius: 1px;
+  opacity: 0.3;
 }
 
-.panel-resizer:hover::before {
+/* 折叠/展开按钮 */
+.resizer-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 8px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  opacity: 0.6;
+}
+
+.resizer-btn:hover {
+  background: var(--primary-color);
+  color: white;
   opacity: 1;
-  background: white;
+}
+
+.resizer-btn:active {
+  transform: scale(0.9);
+}
+
+[data-theme="dark"] .resizer-btn {
+  color: var(--text-muted);
 }
 
 /* 左侧面板宽度由 JS 动态设置 */

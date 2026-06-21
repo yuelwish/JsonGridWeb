@@ -114,7 +114,7 @@ function getWorkerCode(): string {
             if (posMatch) pos = Number(posMatch[1]);
           }
           // 计算行号和列号
-          var lines = s.substring(0, pos).split('\n');
+          var lines = s.substring(0, pos).split('\\n');
           var line = lines.length;
           var col = lines.length > 0 ? lines[lines.length - 1].length : 0;
           return { valid: false, error: e.message, line: line, col: col, validateTime: performance.now() - t };
@@ -654,25 +654,35 @@ function init() {
 // ========== 拖拽条 ==========
 function initPanelResizer() {
   const resizer = document.getElementById('resizer');
-  const container = document.querySelector('.content');
-  const leftPanel = document.querySelector('.left-panel');
-  const rightPanel = document.querySelector('.right-panel');
+  const container = document.querySelector('.content') as HTMLElement;
+  const leftPanel = document.querySelector('.left-panel') as HTMLElement;
+  const rightPanel = document.querySelector('.right-panel') as HTMLElement;
   
   if (!resizer || !container || !leftPanel || !rightPanel) return;
+  
+  // 折叠状态：记录折叠前的比例，用于恢复
+  let previousRatio = parseFloat(localStorage.getItem('panelRatio') || '50');
+  let isLeftCollapsed = false;
+  let isRightCollapsed = false;
   
   // 从 localStorage 恢复比例
   const ratio = localStorage.getItem('panelRatio');
   if (ratio) {
     const leftWidth = Math.max(20, Math.min(80, parseFloat(ratio)));
-    (leftPanel as HTMLElement).style.width = leftWidth + '%';
-    (rightPanel as HTMLElement).style.width = (100 - leftWidth) + '%';
+    leftPanel.style.width = leftWidth + '%';
+    rightPanel.style.width = (100 - leftWidth) + '%';
   }
   
   let isDragging = false;
   
   resizer.addEventListener('mousedown', (e) => {
+    // 如果点击的是按钮，不启动拖拽
+    if ((e.target as HTMLElement).classList.contains('resizer-btn')) return;
     e.preventDefault();
     isDragging = true;
+    // 拖拽时重置折叠状态
+    isLeftCollapsed = false;
+    isRightCollapsed = false;
     document.addEventListener('mousemove', onDrag);
     document.addEventListener('mouseup', stopDrag);
     document.body.style.cursor = 'col-resize';
@@ -680,13 +690,17 @@ function initPanelResizer() {
   
    function onDrag(e: MouseEvent) {
      if (!isDragging) return;
-     const containerWidth = (container as HTMLElement).offsetWidth;
+     const containerWidth = container.offsetWidth;
      let leftWidth = (e.clientX / containerWidth) * 100;
      // 限制在 20%-80% 范围
      leftWidth = Math.max(20, Math.min(80, leftWidth));
-     (leftPanel as HTMLElement).style.width = leftWidth + '%';
-     (rightPanel as HTMLElement).style.width = (100 - leftWidth) + '%';
+     leftPanel.style.width = leftWidth + '%';
+     rightPanel.style.width = (100 - leftWidth) + '%';
      localStorage.setItem('panelRatio', String(leftWidth));
+     previousRatio = leftWidth;
+     // 拖拽时重置折叠状态
+     isLeftCollapsed = false;
+     isRightCollapsed = false;
    }
   
   function stopDrag() {
@@ -695,6 +709,46 @@ function initPanelResizer() {
     document.removeEventListener('mouseup', stopDrag);
     document.body.style.cursor = '';
   }
+
+  // 折叠左侧面板按钮（◀）
+  document.getElementById('btn-collapse-left')?.addEventListener('click', () => {
+    if (isLeftCollapsed) {
+      // 恢复：回到之前的比例或 50/50
+      const restore = previousRatio || 50;
+      leftPanel.style.width = restore + '%';
+      rightPanel.style.width = (100 - restore) + '%';
+      localStorage.setItem('panelRatio', String(restore));
+      isLeftCollapsed = false;
+    } else {
+      // 折叠左侧：左 20%，右 80%
+      previousRatio = parseFloat(leftPanel.style.width) || 50;
+      leftPanel.style.width = '20%';
+      rightPanel.style.width = '80%';
+      localStorage.setItem('panelRatio', '20');
+      isLeftCollapsed = true;
+      isRightCollapsed = false;
+    }
+  });
+
+  // 折叠右侧面板按钮（▶）
+  document.getElementById('btn-collapse-right')?.addEventListener('click', () => {
+    if (isRightCollapsed) {
+      // 恢复：回到之前的比例或 50/50
+      const restore = previousRatio || 50;
+      leftPanel.style.width = restore + '%';
+      rightPanel.style.width = (100 - restore) + '%';
+      localStorage.setItem('panelRatio', String(restore));
+      isRightCollapsed = false;
+    } else {
+      // 折叠右侧：左 80%，右 20%
+      previousRatio = parseFloat(leftPanel.style.width) || 50;
+      leftPanel.style.width = '80%';
+      rightPanel.style.width = '20%';
+      localStorage.setItem('panelRatio', '80');
+      isRightCollapsed = true;
+      isLeftCollapsed = false;
+    }
+  });
 }
 
 // ========== 错误高亮 ==========
