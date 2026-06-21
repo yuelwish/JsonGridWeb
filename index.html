@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JSON Grid - 高性能 JSON 格式化工具</title>
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="toolbar-left">
+        <h1>JSON Grid</h1>
+      </div>
+      <div class="toolbar-center">
+        <button id="btn-format" class="btn">格式化</button>
+        <button id="btn-compress" class="btn">压缩</button>
+        <button id="btn-clear" class="btn">清空</button>
+      </div>
+      <div class="toolbar-right">
+        <input id="search-input" type="text" placeholder="搜索..." class="search-input">
+        <button id="btn-theme" class="theme-toggle" title="切换主题">🌙</button>
+      </div>
+    </header>
+    
+    <main class="content">
+      <div class="panel left-panel">
+        <div class="panel-header">
+          <span>输入 JSON</span>
+          <span class="stats" id="input-stats">0 字符</span>
+        </div>
+        <div id="editor-input" class="editor-container"></div>
+      </div>
+      
+      <div id="resizer" class="panel-resizer" title="拖拽调整面板宽度"></div>
+      
+      <div class="panel right-panel">
+        <div class="panel-header">
+          <div class="view-tabs">
+            <button class="tab-btn active" data-view="grid">Grid</button>
+            <button class="tab-btn" data-view="tree">树形</button>
+          </div>
+          <span class="stats" id="output-stats">0 字符</span>
+        </div>
+        <div id="editor-output" class="editor-container" style="display: none;"></div>
+        <div id="grid-toolbar" class="grid-toolbar" style="display: none;">
+          <div class="grid-toolbar-group">
+            <button id="grid-btn-expand-all" class="grid-toolbar-btn" title="展开全部嵌套">展开全部</button>
+            <button id="grid-btn-collapse-all" class="grid-toolbar-btn" title="折叠全部嵌套">折叠全部</button>
+          </div>
+          <div class="grid-toolbar-group">
+            <button id="grid-btn-filter" class="grid-toolbar-btn" title="高级过滤">高级过滤</button>
+          </div>
+        </div>
+        <div id="grid-view" class="grid-container"></div>
+        <div id="tree-view" class="tree-container" style="display: none;"></div>
+      </div>
+    </main>
+    
+    <footer class="status-bar">
+      <span id="status-message">就绪</span>
+      <span id="performance-info"></span>
+    </footer>
+  </div>
+  
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
