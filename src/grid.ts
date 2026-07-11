@@ -11,10 +11,8 @@ interface GridState {
   headers: string[];
   rows: unknown[];
   container: HTMLElement;
-  bodyEl: HTMLElement;
   rowsEl: HTMLElement;
   spacerEl: HTMLElement;
-  infoEl: HTMLElement | null;
   expandedCells: Set<string>;
   viewMode: 'array' | 'object';
   colWidths: number[];
@@ -70,7 +68,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     for (const row of rows) {
       const obj = row as { key: string; val: unknown };
       if (obj.key.length > maxKeyLen) maxKeyLen = obj.key.length;
-      const valStr = obj.val === null ? 'null' : typeof obj.val === 'object' ? JSON.stringify(obj.val).substring(0, 50) : String(obj.val);
+      const valStr = summarizeValue(obj.val);
       if (valStr.length > maxValLen) maxValLen = valStr.length;
     }
     colWidths.push(Math.max(160, Math.min(300, Math.max(maxKeyLen, headers[0]?.length || 0) * 8 + 40)));
@@ -82,7 +80,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
       for (const row of rows) {
         const item = row as Record<string, unknown>;
         const val = item ? item[headers[h]] : undefined;
-        const valStr = val === null || val === undefined ? '' : typeof val === 'object' ? JSON.stringify(val).substring(0, 50) : String(val);
+        const valStr = summarizeValue(val);
         if (valStr.length > maxLen) maxLen = valStr.length;
       }
       colWidths.push(Math.max(160, Math.min(400, maxLen * 8 + 40)));
@@ -91,8 +89,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
 
   const state: GridState = {
     headers, rows, container,
-    bodyEl: null!, rowsEl: null!, spacerEl: null!,
-    infoEl: null,
+    rowsEl: null!, spacerEl: null!,
     expandedCells, viewMode,
     colWidths, measured: false,
     rowHeights: [],
@@ -120,16 +117,10 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
   body.appendChild(rowsEl);
   wrapper.appendChild(body);
 
-  const info = document.createElement('div');
-  info.className = 'grid-info';
-  wrapper.appendChild(info);
-
   container.appendChild(wrapper);
 
-  state.bodyEl = body;
   state.rowsEl = rowsEl;
   state.spacerEl = spacer;
-  state.infoEl = info;
 
   function rerender() { renderVisibleRows(state); }
   gridRerender = rerender;
@@ -172,17 +163,13 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
       }
       return;
     }
-    const key = expandable.getAttribute('data-expand-key') || expandable.getAttribute('data-group-key');
+    const key = expandable.getAttribute('data-expand-key');
     if (!key) return;
 
-    const expandIcon = expandable.querySelector('.expand-icon');
-    
     if (expandedCells.has(key)) {
       expandedCells.delete(key);
-      if (expandIcon) expandIcon.classList.remove('expanded');
     } else {
       expandedCells.add(key);
-      if (expandIcon) expandIcon.classList.add('expanded');
     }
     // 展开/折叠后重测列宽与行高（保留已有 colWidths 作下限，避免回落到 160）
     state.measured = false;
@@ -208,8 +195,6 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     }
 
     applySortAndFilter(state);
-    state.measured = false;
-    state.rowHeights = [];
     rerender();
     updateHeaderIndicators(headerEl, state);
   });
@@ -230,8 +215,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     startEditing(state, rowIdx, colIdx, cell);
   });
 
-  // 自动展开全部嵌套内容
-  expandAll();
+  // 默认折叠；展开由工具栏「展开全部」或单元格点击触发
   rerender();
 }
 
@@ -285,27 +269,12 @@ function buildHeader(headers: string[], state: GridState): HTMLElement {
   return headerEl;
 }
 
-interface DisplayRow {
-  type: 'normal';
-  rowIndex: number;
-  data?: unknown;
-}
-
-function buildDisplayRows(state: GridState): DisplayRow[] {
-  const { filteredRows } = state;
-  const result: DisplayRow[] = [];
-
-  for (let i = 0; i < filteredRows.length; i++) {
-    result.push({ type: 'normal', rowIndex: i, data: filteredRows[i] });
-  }
-
-  return result;
-}
-
 // 检测数组是否同构（所有元素键相同）
 function isHomogeneousArray(arr: unknown[]): boolean {
   if (arr.length === 0) return false;
-  const firstKeys = new Set(Object.keys(arr[0] as Record<string, unknown>));
+  const first = arr[0];
+  if (first === null || typeof first !== 'object' || Array.isArray(first)) return false;
+  const firstKeys = new Set(Object.keys(first as Record<string, unknown>));
   for (let i = 1; i < arr.length; i++) {
     if (arr[i] === null || typeof arr[i] !== 'object' || Array.isArray(arr[i])) return false;
     const keys = new Set(Object.keys(arr[i] as Record<string, unknown>));
@@ -321,38 +290,52 @@ function isExpandable(val: unknown): boolean {
   return val !== null && typeof val === 'object';
 }
 
-interface ChildEntry { key: string; value: unknown; type: string; }
+// 主线程轻量摘要，避免对完整结构 JSON.stringify（列宽/排序/过滤热路径）
+function summarizeValue(val: unknown): string {
+  if (val === null) return 'null';
+  if (val === undefined) return '';
+  if (Array.isArray(val)) return '[' + val.length + ']';
+  if (typeof val === 'object') return '{...}';
+  return String(val);
+}
+
+// CSV 为一次性导出，对象/数组保留完整序列化
+function formatExportValue(val: unknown): string {
+  if (val === null) return 'null';
+  if (val === undefined) return '';
+  if (typeof val === 'object') {
+    try {
+      return JSON.stringify(val);
+    } catch (_e) {
+      return String(val);
+    }
+  }
+  return String(val);
+}
+
+interface ChildEntry { key: string; value: unknown; }
 
 function getChildren(val: unknown): ChildEntry[] {
   if (Array.isArray(val)) {
     const result: ChildEntry[] = [];
     for (let i = 0; i < val.length; i++) {
-      const v = val[i];
-      result.push({
-        key: '[' + i + ']', value: v,
-        type: v === null ? 'null' : typeof v === 'object' ? (Array.isArray(v) ? 'array' : 'object') : typeof v
-      });
+      result.push({ key: '[' + i + ']', value: val[i] });
     }
     return result;
   }
   if (val !== null && typeof val === 'object') {
     const result: ChildEntry[] = [];
     for (const k of Object.keys(val as Record<string, unknown>)) {
-      const v = (val as Record<string, unknown>)[k];
-      result.push({
-        key: k, value: v,
-        type: v === null ? 'null' : typeof v === 'object' ? (Array.isArray(v) ? 'array' : 'object') : typeof v
-      });
+      result.push({ key: k, value: (val as Record<string, unknown>)[k] });
     }
     return result;
   }
   return [];
 }
 
-function renderVisibleRows(state: GridState): void {
-  const { headers, rowsEl, spacerEl, infoEl, viewMode, container } = state;
-  const displayRows = buildDisplayRows(state);
-  const totalDisplayRows = displayRows.length;
+function renderVisibleRows(state: GridState, layoutPass = 0): void {
+  const { headers, rowsEl, spacerEl, viewMode, container, filteredRows } = state;
+  const totalDisplayRows = filteredRows.length;
 
   // ponytail: 垂直滚动由 container 处理
   const scrollTop = container.scrollTop;
@@ -391,17 +374,21 @@ function renderVisibleRows(state: GridState): void {
 
   const parts: string[] = [];
   for (let i = startIdx; i < endIdx; i++) {
-    parts.push(renderNormalRow(state, displayRows[i], headers, viewMode));
+    parts.push(renderNormalRow(state, i, filteredRows[i], headers, viewMode));
   }
 
   rowsEl.innerHTML = parts.join('');
 
-  // 测量实际行高并更新缓存
+  // 测量实际行高并更新缓存；高度剧变时同帧再校正可见窗口
+  let heightChanged = false;
   if (rowsEl.children.length > 0) {
     for (let i = startIdx; i < endIdx; i++) {
       const el = rowsEl.children[i - startIdx] as HTMLElement;
       if (el) {
-        state.rowHeights[i] = el.offsetHeight;
+        const h = el.offsetHeight;
+        const prev = state.rowHeights[i] || ROW_HEIGHT;
+        if (Math.abs(h - prev) > 1) heightChanged = true;
+        state.rowHeights[i] = h;
       }
     }
     // 更新 spacer 总高度
@@ -428,19 +415,19 @@ function renderVisibleRows(state: GridState): void {
       state.colWidths = widths;
       state.measured = true;
       syncHeaderWidths(state);
-      if (changed) {
-        // 同步重绘，避免 rAF 期间再被其他路径清掉
-        renderVisibleRows(state);
-        return;
+      if (changed || heightChanged) {
+        // 同步重绘，避免 rAF 期间再被其他路径清掉；限制校正次数防止递归
+        if (layoutPass < 2) {
+          renderVisibleRows(state, layoutPass + 1);
+          return;
+        }
       }
     } else {
       state.measured = true;
     }
-  }
-
-  // ponytail: 移除右下角的行数统计，避免与底部状态栏重复
-  if (infoEl) {
-    infoEl.textContent = '';
+  } else if (heightChanged && layoutPass < 2) {
+    renderVisibleRows(state, layoutPass + 1);
+    return;
   }
 }
 
@@ -527,9 +514,7 @@ function measureColumnWidths(state: GridState, rowsEl: HTMLElement, numCols: num
   return widths;
 }
 
-function renderNormalRow(state: GridState, dr: DisplayRow, headers: string[], viewMode: string): string {
-  const row = dr.data!;
-  const actualIdx = dr.rowIndex;
+function renderNormalRow(state: GridState, actualIdx: number, row: unknown, headers: string[], viewMode: string): string {
   const parts: string[] = [];
 
   // flex 行：高度由内容撑开，列宽由 colWidths 对齐
@@ -727,9 +712,12 @@ function formatCell(val: unknown): { display: string; typeClass: string } {
   if (val === null || val === undefined) {
     return { display: val === null ? 'null' : '', typeClass: 'type-null' };
   }
+  if (Array.isArray(val)) {
+    return { display: '[' + val.length + ']', typeClass: 'type-array' };
+  }
   const type = typeof val;
   if (type === 'object') {
-    return { display: JSON.stringify(val), typeClass: 'type-object' };
+    return { display: '{...}', typeClass: 'type-object' };
   }
   return { display: String(val), typeClass: 'type-' + type };
 }
@@ -741,10 +729,10 @@ function truncateText(text: string): { text: string; shouldTruncate: boolean } {
   return { text, shouldTruncate: false };
 }
 
-// 展开全部：递归遍历所有数据，将所有可展开的路径加入 expandedCells
+// 展开全部：按当前可见行序列（filteredRows）生成与渲染一致的路径
 export function expandAll(): void {
   if (!currentGridState) return;
-  const { rows, headers, expandedCells, viewMode } = currentGridState;
+  const { filteredRows, headers, expandedCells, viewMode } = currentGridState;
 
   // 递归收集所有可展开的路径
   function collectExpandablePaths(val: unknown, path: string[]): void {
@@ -761,11 +749,11 @@ export function expandAll(): void {
     }
   }
 
-  // 遍历顶层行
-  for (let i = 0; i < rows.length; i++) {
+  // 遍历当前用于渲染的行序列
+  for (let i = 0; i < filteredRows.length; i++) {
     if (viewMode === 'array') {
       for (let h = 1; h < headers.length; h++) {
-        const item = rows[i] as Record<string, unknown>;
+        const item = filteredRows[i] as Record<string, unknown>;
         const val = item ? item[headers[h]] : undefined;
         if (isExpandable(val)) {
           const path = [String(i), headers[h]];
@@ -773,7 +761,7 @@ export function expandAll(): void {
         }
       }
     } else {
-      const obj = rows[i] as { key: string; val: unknown; type: string };
+      const obj = filteredRows[i] as { key: string; val: unknown };
       if (isExpandable(obj.val)) {
         const path = [String(i), obj.key];
         collectExpandablePaths(obj.val, path);
@@ -819,8 +807,8 @@ function compareValues(a: unknown, b: unknown): number {
   if (ta === 'boolean') return (a as boolean ? 1 : 0) - (b as boolean ? 1 : 0);
   if (ta === 'string') return (a as string).localeCompare(b as string);
 
-  // 对象/数组：转字符串比较
-  return JSON.stringify(a).localeCompare(JSON.stringify(b));
+  // 对象/数组：用轻量摘要比较，避免完整序列化
+  return summarizeValue(a).localeCompare(summarizeValue(b));
 }
 
 function sortRows(rows: unknown[], colIdx: number, headers: string[], viewMode: string, direction: 'asc' | 'desc'): unknown[] {
@@ -836,12 +824,11 @@ function sortRows(rows: unknown[], colIdx: number, headers: string[], viewMode: 
       va = ha ? ha[key] : undefined;
       vb = hb ? hb[key] : undefined;
     } else {
-      const oa = a as { key: string; val: unknown; type: string };
-      const ob = b as { key: string; val: unknown; type: string };
-      // colIdx: 0=键, 1=值, 2=类型
+      const oa = a as { key: string; val: unknown };
+      const ob = b as { key: string; val: unknown };
+      // colIdx: 0=键, 1=值
       if (colIdx === 0) { va = oa.key; vb = ob.key; }
-      else if (colIdx === 1) { va = oa.val; vb = ob.val; }
-      else { va = oa.type; vb = ob.type; }
+      else { va = oa.val; vb = ob.val; }
     }
 
     let cmp = compareValues(va, vb);
@@ -862,25 +849,21 @@ function filterRows(rows: unknown[], query: string, headers: string[], viewMode:
       if (!item) return false;
       // 检查所有列的值
       for (let h = 1; h < headers.length; h++) {
-        const val = item[headers[h]];
-        const str = val === null ? 'null' : val === undefined ? '' :
-          typeof val === 'object' ? JSON.stringify(val) : String(val);
-        if (str.toLowerCase().includes(q)) return true;
+        const str = summarizeValue(item[headers[h]]).toLowerCase();
+        if (str.includes(q)) return true;
       }
       return false;
     } else {
-      const obj = row as { key: string; val: unknown; type: string };
+      const obj = row as { key: string; val: unknown };
       // 检查键和值
       if (obj.key.toLowerCase().includes(q)) return true;
-      const val = obj.val;
-      const str = val === null ? 'null' : val === undefined ? '' :
-        typeof val === 'object' ? JSON.stringify(val) : String(val);
-      return str.toLowerCase().includes(q);
+      return summarizeValue(obj.val).toLowerCase().includes(q);
     }
   });
 }
 
 // 应用排序和过滤，更新 state.filteredRows
+// 索引型 expandKey 会失效，清空展开状态并重测布局
 function applySortAndFilter(state: GridState): void {
   let result = state.rows.slice();
 
@@ -895,6 +878,9 @@ function applySortAndFilter(state: GridState): void {
   }
 
   state.filteredRows = result;
+  state.expandedCells.clear();
+  state.measured = false;
+  state.rowHeights = [];
 }
 
 // 更新表头排序指示器
@@ -933,19 +919,15 @@ export function exportToCSV(): void {
       const item = row as Record<string, unknown>;
       const cells = headers.slice(1).map(h => {
         const val = item ? item[h] : undefined;
-        return csvEscape(val === null ? 'null' : val === undefined ? '' :
-          typeof val === 'object' ? JSON.stringify(val) : String(val));
+        return csvEscape(formatExportValue(val));
       });
       lines.push(cells.join(','));
     }
   } else {
-    lines.push(['键', '值', '类型'].map(csvEscape).join(','));
+    lines.push(['键', '值'].map(csvEscape).join(','));
     for (const row of filteredRows) {
-      const obj = row as { key: string; val: unknown; type: string };
-      const val = obj.val;
-      const valStr = val === null ? 'null' : val === undefined ? '' :
-        typeof val === 'object' ? JSON.stringify(val) : String(val);
-      lines.push([csvEscape(obj.key), csvEscape(valStr), csvEscape(obj.type)].join(','));
+      const obj = row as { key: string; val: unknown };
+      lines.push([csvEscape(obj.key), csvEscape(formatExportValue(obj.val))].join(','));
     }
   }
 
@@ -973,8 +955,6 @@ export function setFilterText(text: string): void {
   currentGridState.sortColumn = -1;
   currentGridState.sortDirection = null;
   applySortAndFilter(currentGridState);
-  currentGridState.measured = false;
-  currentGridState.rowHeights = [];
   if (gridRerender) gridRerender();
 }
 
@@ -1012,10 +992,9 @@ function startEditing(state: GridState, rowIdx: number, colIdx: number, cell: HT
     const item = row as Record<string, unknown>;
     oldValue = item ? item[state.headers[colIdx]] : undefined;
   } else {
-    const obj = row as { key: string; val: unknown; type: string };
+    const obj = row as { key: string; val: unknown };
     if (colIdx === 0) oldValue = obj.key;
-    else if (colIdx === 1) oldValue = obj.val;
-    else oldValue = obj.type;
+    else oldValue = obj.val;
   }
 
   // 创建 input
@@ -1076,12 +1055,16 @@ function finishEditing(): void {
   input.remove();
   currentEdit = null;
 
-  // 类型转换
+  // 类型转换：按原值类型互斥处理
   let parsedValue: unknown = newValue;
   if (typeof oldValue === 'number') {
     parsedValue = Number(newValue);
     if (isNaN(parsedValue as number)) parsedValue = oldValue; // 无效数字，恢复原值
-    parsedValue = newValue.toLowerCase() === 'true';
+  } else if (typeof oldValue === 'boolean') {
+    const lower = newValue.toLowerCase();
+    if (lower === 'true') parsedValue = true;
+    else if (lower === 'false') parsedValue = false;
+    else parsedValue = oldValue;
   } else if (oldValue === null) {
     if (newValue === 'null') parsedValue = null;
     else parsedValue = newValue; // 从 null 改为其他类型
@@ -1114,43 +1097,47 @@ function findCell(rowsEl: HTMLElement, rowIdx: number, colIdx: number): HTMLElem
 }
 
 // 获取当前编辑的单元格路径（用于 Worker updateCell）
+// 与 startEditing 一致：基于 filteredRows 的可见行索引
 export function getCellPath(rowIdx: number, colIdx: number): string[] | null {
   if (!currentGridState) return null;
-  const { rows, headers, viewMode } = currentGridState;
-  const row = rows[rowIdx];
+  const { filteredRows, headers, viewMode } = currentGridState;
+  const row = filteredRows[rowIdx];
   if (!row) return null;
 
   if (viewMode === 'array') {
-    return [String(rowIdx), headers[colIdx]];
+    // 数组视图：路径使用原始数据中的位置索引
+    const originalIdx = currentGridState.rows.indexOf(row);
+    if (originalIdx < 0) return null;
+    return [String(originalIdx), headers[colIdx]];
   } else {
-    const obj = row as { key: string; val: unknown; type: string };
+    const obj = row as { key: string; val: unknown };
     if (colIdx === 0) return [obj.key]; // 键名编辑（编辑键名会改变结构，暂不支持）
     if (colIdx === 1) return [obj.key]; // 值编辑
-    return null; // 类型列不编辑
+    return null;
   }
 }
 
 // 更新单元格后的回调（由 main.ts 调用）
 export function onCellUpdated(newData: unknown): void {
   if (!currentGridState) return;
-  
+
   let rows: unknown[];
   if (Array.isArray(newData)) {
     rows = newData;
   } else if (newData !== null && typeof newData === 'object') {
     rows = Object.entries(newData as Record<string, unknown>).map(([k, v]) => {
-      const type = v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
-      return { key: k, val: v, type };
+      return { key: k, val: v };
     });
   } else {
     return;
   }
-  
+
   currentGridState.rows = rows;
   currentGridState.filteredRows = rows;
   currentGridState.sortColumn = -1;
   currentGridState.sortDirection = null;
   currentGridState.filterText = '';
+  currentGridState.expandedCells.clear();
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
   if (gridRerender) gridRerender();

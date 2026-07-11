@@ -538,32 +538,6 @@ body {
 .cm-bracket { color: #6b7280; }
 .cm-operator { color: #6b7280; }
 
-/* Grid View */
-.grid-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.875rem;
-}
-
-.grid-table th,
-.grid-table td {
-  padding: 0.5rem;
-  border: 1px solid var(--border-color);
-  text-align: left;
-}
-
-.grid-table th {
-  background: var(--surface-color);
-  font-weight: 600;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.grid-table tr:hover {
-  background: var(--hover-color);
-}
-
 /* Responsive */
 @media (max-width: 768px) {
   .content {
@@ -734,20 +708,6 @@ body {
   letter-spacing: 0.3px;
 }
 
-/* 表头拖拽手柄 */
-.grid-cell .header-drag-handle {
-  cursor: grab;
-  color: var(--text-muted);
-  opacity: 0.85;
-  font-size: 14px;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.grid-cell .header-drag-handle:hover {
-  opacity: 1;
-}
-
 /* 表头排序图标 */
 .grid-cell .header-sort-icon {
   position: absolute;
@@ -860,11 +820,6 @@ body {
 .type-null { color: var(--text-muted); font-style: italic; }
 .type-object { color: #7c3aed; font-weight: 500; }
 .type-array { color: #db2777; font-weight: 500; }
-
-/* 底部信息栏（已隐藏，避免与底部状态栏重复） */
-.grid-info {
-  display: none;
-}
 
 /* Grid 工具栏 */
 .grid-toolbar {
@@ -985,20 +940,6 @@ body {
   background: var(--bg-color);
 }
 
-[data-theme="dark"] .grid-row-child {
-  background: var(--bg-color);
-}
-
-[data-theme="dark"] .grid-row-child:hover {
-  background: var(--hover-color) !important;
-}
-
-[data-theme="dark"] .grid-info {
-  background: var(--surface-color);
-  border-top-color: var(--border-color);
-  color: var(--text-muted);
-}
-
 [data-theme="dark"] .grid-row:nth-child(even) {
   background: var(--bg-color);
 }
@@ -1028,74 +969,7 @@ body {
   background: var(--hover-color);
 }
 
-.expand-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  background: var(--text-muted);
-  color: var(--surface-color);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-  flex-shrink: 0;
-  transition: all 0.15s ease;
-}
-
-.cell-expandable:hover .expand-icon {
-  background: var(--primary-color);
-  color: white;
-  transform: scale(1.05);
-}
-
-.expand-icon.expanded {
-  transform: rotate(90deg);
-  background: var(--primary-color);
-  color: white;
-}
-
-/* 展开指示标签 */
-.expand-label {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 13.5px;
-  color: var(--text-color);
-}
-
-.expand-label .expand-key-name {
-  color: var(--text-color);
-  font-weight: 400;
-}
-
-/* 嵌套子行：层次缩进 + 左侧边框（阶梯效果） */
-.grid-row-child {
-  background: #fafbfc;
-  position: relative;
-  border-left: 2px solid var(--border-color);
-}
-
-/* 嵌套子行 hover */
-.grid-row-child:hover {
-  background: var(--hover-color) !important;
-  border-left-color: var(--primary-color);
-}
-
-
-/* 嵌套子表格单元格 */
-.grid-row-child .grid-cell {
-  padding-top: 4px;
-  padding-bottom: 4px;
-  font-size: 13px;
-}
-
-/* 子表头行 */
-.grid-subheader {
-  background: var(--bg-color);
-  border-top: 2px solid var(--border-color);
-  border-bottom: 1px solid var(--border-color);
-}
-
+/* 子表头单元格（嵌套同构对象数组表头） */
 .grid-subheader-cell {
   font-size: 11px;
   color: var(--text-muted);
@@ -1105,64 +979,8 @@ body {
   padding: 6px 8px;
 }
 
-[data-theme="dark"] .grid-subheader {
-  background: var(--bg-color);
-  border-top-color: var(--border-color);
-  border-bottom-color: var(--border-color);
-}
-
 [data-theme="dark"] .grid-subheader-cell {
   color: var(--text-muted);
-}
-
-[data-theme="dark"] .grid-row-child {
-  background: var(--bg-color);
-  border-left-color: var(--border-color);
-}
-
-[data-theme="dark"] .grid-row-child:hover {
-  background: var(--hover-color) !important;
-  border-left-color: var(--text-muted);
-}
-
-.child-key-cell {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-weight: 500;
-  color: var(--text-color);
-  font-size: 13.5px;
-}
-
-/* Filter input */
-.filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: var(--surface-color);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.filter-input {
-  flex: 1;
-  padding: 0.375rem 0.75rem;
-  border: 1px solid var(--border-color);
-  border-radius: 0.375rem;
-  font-size: 0.9375rem;
-  font-family: var(--font-mono);
-  background: var(--bg-color);
-  color: var(--text-color);
-}
-
-.filter-input:focus {
-  outline: none;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-.filter-label {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  white-space: nowrap;
 }
 
 /* 嵌套表格 - 1:1 复刻 jsongrid.com：table-in-cell，无 margin 缩进 */
