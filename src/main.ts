@@ -4,7 +4,7 @@ import { Decoration, ViewPlugin } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
 import { renderTree } from './tree';
-import { renderVirtualGrid } from './grid';
+import { renderVirtualGrid, expandAll, collapseAll, exportToCSV, setFilterText, getFilteredCount, getTotalCount, getCellPath, onCellUpdated } from './grid';
 
 // ========== Worker 管理 ==========
 let worker: Worker;
@@ -69,7 +69,7 @@ function getWorkerCode(): string {
           case 'validate': result = validateJSON(payload); break;
           case 'search': result = searchJSON(payload); break;
           case 'filter': result = filterJSON(payload); break;
-          default: throw new Error('Unknown: ' + type);
+          case 'updateCell': result = updateCell(payload); break;
         }
         self.postMessage({ id, success: true, result });
       } catch (err) {
@@ -273,6 +273,43 @@ function getWorkerCode(): string {
       if (buf) tokens.push(buf);
       return tokens;
     }
+    function updateCell(p) {
+      var t = performance.now();
+      var data = p.data;
+      var path = p.path;
+      var value = p.value;
+
+      // 深拷贝
+      var cloned = JSON.parse(JSON.stringify(data));
+
+      // 按路径更新
+      var current = cloned;
+      for (var i = 0; i < path.length - 1; i++) {
+        var key = path[i];
+        if (Array.isArray(current)) {
+          current = current[Number(key)];
+        } else {
+          current = current[key];
+        }
+        if (current === null || current === undefined) {
+          throw new Error('路径无效: ' + path.join('.'));
+        }
+      }
+
+      var lastKey = path[path.length - 1];
+      if (Array.isArray(current)) {
+        current[Number(lastKey)] = value;
+      } else {
+        current[lastKey] = value;
+      }
+
+      var jsonString = JSON.stringify(cloned, null, 2);
+      return {
+        data: cloned,
+        jsonString: jsonString,
+        updateTime: performance.now() - t
+      };
+    }
   `;
 }
 
@@ -295,7 +332,7 @@ function initEditors() {
   let autoFormatTimer: number;
 
   inputEditor = new EditorView({
-    doc: '{\n  "message": "在此输入 JSON"\n}',
+    doc: JSON.stringify({"name":"JSON Grid 对比测试","version":"2.0","metadata":{"author":{"name":"Test User","email":"test@example.com","role":"developer","skills":["JavaScript","TypeScript","CSS","React"]},"stats":{"totalObjects":15,"maxDepth":5,"arrayCount":8}},"users":[{"id":1,"username":"alice","profile":{"firstName":"Alice","lastName":"Johnson","age":28,"address":{"street":"123 Main St","city":"New York","state":"NY","zipCode":"10001","coordinates":{"latitude":40.7128,"longitude":-74.006}},"contact":{"email":"alice@example.com","phone":"+1-555-0101","social":{"twitter":"@alice","github":"alice-dev","linkedin":"alice-johnson"}}},"preferences":{"theme":"dark","language":"zh-CN","notifications":{"email":true,"push":false,"sms":false}},"orders":[{"orderId":"ORD-001","date":"2026-07-01","items":[{"productId":"PROD-101","name":"Wireless Mouse","quantity":2,"price":29.99,"specs":{"color":"Black","connectivity":"Bluetooth 5.0","battery":"Rechargeable","dimensions":{"width":6.5,"height":2.5,"depth":4.0,"unit":"cm"}}},{"productId":"PROD-102","name":"Mechanical Keyboard","quantity":1,"price":89.99,"specs":{"switches":"Cherry MX Blue","layout":"Full-size","backlight":"RGB","keycaps":"PBT Double-shot"}}],"shipping":{"method":"Express","cost":15.99,"tracking":"TRK123456789","estimatedDelivery":"2026-07-03"},"payment":{"method":"Credit Card","last4":"4242","status":"completed"}}]},{"id":2,"username":"bob","profile":{"firstName":"Bob","lastName":"Smith","age":35,"address":{"street":"456 Oak Ave","city":"San Francisco","state":"CA","zipCode":"94102","coordinates":{"latitude":37.7749,"longitude":-122.4194}},"contact":{"email":"bob@example.com","phone":"+1-555-0102"}},"preferences":{"theme":"light","language":"en-US","notifications":{"email":true,"push":true,"sms":true}},"orders":[]}],"settings":{"general":{"siteName":"JSON Grid Test","maintenance":false,"debug":true},"features":{"gridView":true,"treeView":true,"search":true,"filter":{"enabled":true,"maxResults":100,"cacheResults":true}},"limits":{"maxFileSize":"10MB","maxRows":10000,"timeout":30000}}}, null, 2),
     extensions: [
       basicSetup,
       json(),
@@ -324,8 +361,9 @@ function initEditors() {
 function updateStats(side: 'input' | 'output') {
   const editor = side === 'input' ? inputEditor : outputEditor;
   const content = editor.state.doc.toString();
-  const el = document.getElementById(side === 'input' ? 'input-stats' : 'output-stats');
-  if (el) el.textContent = `${content.length} 字符 | ${content.split('\n').length} 行`;
+  const text = `${content.length} 字符 | ${content.split('\n').length} 行`;
+  const el = document.getElementById(side === 'input' ? 'left-stats' : 'right-stats');
+  if (el) el.textContent = (side === 'input' ? '输入: ' : '输出: ') + text;
 }
 
 /**
@@ -606,8 +644,70 @@ function setupEventListeners() {
        if (view) switchView(view);
      });
    });
-   
-    // Grid 视图定位到编辑器 - 简化版本
+
+   // Grid 视图：展开全部 / 折叠全部
+   document.getElementById('grid-btn-expand-all')?.addEventListener('click', () => {
+     expandAll();
+   });
+  document.getElementById('grid-btn-collapse-all')?.addEventListener('click', () => {
+    collapseAll();
+  });
+
+  // Grid 视图：过滤
+  let filterTimer: number;
+  document.getElementById('grid-filter-input')?.addEventListener('input', (e) => {
+    clearTimeout(filterTimer);
+    const query = (e.target as HTMLInputElement).value;
+    filterTimer = window.setTimeout(() => {
+      setFilterText(query);
+      // 更新状态栏显示过滤结果
+      const total = getTotalCount();
+      const filtered = getFilteredCount();
+      if (query) {
+        setStatus(`过滤: ${filtered} / ${total} 行`, 'info');
+      } else {
+        setStatus('就绪');
+      }
+    }, 200);
+  });
+
+  // Grid 视图：导出 CSV
+  document.getElementById('grid-btn-export-csv')?.addEventListener('click', () => {
+    exportToCSV();
+    setStatus('CSV 已导出', 'success');
+  });
+
+  // Grid 视图：单元格编辑
+  window.addEventListener('grid-cell-edit', async (e: any) => {
+    const { rowIdx, colIdx, newValue } = e.detail;
+    const path = getCellPath(rowIdx, colIdx);
+    if (!path) return;
+
+    try {
+      setStatus('更新中...');
+      // 获取当前数据
+      const input = inputEditor.state.doc.toString();
+      const parseResult = await workerRequest('parse', input);
+      // 更新单元格
+      const updateResult = await workerRequest('updateCell', {
+        data: parseResult.data,
+        path: path,
+        value: newValue
+      });
+      // 更新编辑器内容
+      autoFormatting = true;
+      inputEditor.dispatch({
+        changes: { from: 0, to: inputEditor.state.doc.length, insert: updateResult.jsonString }
+      });
+      updateStats('input');
+      autoFormatting = false;
+      // 更新 Grid
+      onCellUpdated(updateResult.data);
+      setStatus(`已更新 (${updateResult.updateTime.toFixed(2)}ms)`, 'success');
+    } catch (err: any) {
+      setStatus(`更新失败: ${err.message}`, 'error');
+    }
+  });
     window.addEventListener('grid-navigate', (e: any) => {
       const { line } = e.detail;
       const lineNo = Math.max(0, line - 1);
@@ -665,13 +765,11 @@ function initPanelResizer() {
   let isLeftCollapsed = false;
   let isRightCollapsed = false;
   
-  // 从 localStorage 恢复比例
+  // 从 localStorage 恢复比例，默认 25%（更靠左，给右侧更多空间）
   const ratio = localStorage.getItem('panelRatio');
-  if (ratio) {
-    const leftWidth = Math.max(20, Math.min(80, parseFloat(ratio)));
-    leftPanel.style.width = leftWidth + '%';
-    rightPanel.style.width = (100 - leftWidth) + '%';
-  }
+  const leftWidth = ratio ? Math.max(20, Math.min(80, parseFloat(ratio))) : 25;
+  leftPanel.style.width = leftWidth + '%';
+  rightPanel.style.width = (100 - leftWidth) + '%';
   
   let isDragging = false;
   
@@ -747,6 +845,39 @@ function initPanelResizer() {
       localStorage.setItem('panelRatio', '80');
       isRightCollapsed = true;
       isLeftCollapsed = false;
+    }
+  });
+
+  // ========== 全屏切换 ==========
+  // 左侧全屏按钮（⛶）
+  document.getElementById('btn-fullscreen-left')?.addEventListener('click', () => {
+    if (container.classList.contains('fullscreen-left')) {
+      // 恢复
+      container.classList.remove('fullscreen-left');
+      const restore = previousRatio || 50;
+      leftPanel.style.width = restore + '%';
+      rightPanel.style.width = (100 - restore) + '%';
+    } else {
+      // 左侧全屏：隐藏右侧
+      container.classList.remove('fullscreen-right');
+      container.classList.add('fullscreen-left');
+      previousRatio = parseFloat(leftPanel.style.width) || 50;
+    }
+  });
+
+  // 右侧全屏按钮（⛶）
+  document.getElementById('btn-fullscreen-right')?.addEventListener('click', () => {
+    if (container.classList.contains('fullscreen-right')) {
+      // 恢复
+      container.classList.remove('fullscreen-right');
+      const restore = previousRatio || 50;
+      leftPanel.style.width = restore + '%';
+      rightPanel.style.width = (100 - restore) + '%';
+    } else {
+      // 右侧全屏：隐藏左侧
+      container.classList.remove('fullscreen-left');
+      container.classList.add('fullscreen-right');
+      previousRatio = parseFloat(leftPanel.style.width) || 50;
     }
   });
 }
