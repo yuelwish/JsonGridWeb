@@ -7,6 +7,37 @@ const OVERSCAN = 5;
 let currentGridState: GridState | null = null;
 let gridRerender: (() => void) | null = null;
 
+/** 路径段编码：\\ 与 \|，避免键名含 | 时被误切分 */
+function encodePathSegment(seg: string): string {
+  return String(seg).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+}
+
+/** 按未转义 | 分段，识别 \\| 与 \\ */
+function decodePathSegments(pathKey: string): string[] {
+  const segments: string[] = [];
+  let cur = '';
+  for (let i = 0; i < pathKey.length; i++) {
+    const ch = pathKey.charAt(i);
+    if (ch === '\\') {
+      if (i + 1 < pathKey.length) {
+        cur += pathKey.charAt(i + 1);
+        i++;
+      } else {
+        cur += '\\';
+      }
+      continue;
+    }
+    if (ch === '|') {
+      segments.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  segments.push(cur);
+  return segments;
+}
+
 interface GridState {
   headers: string[];
   rows: unknown[];
@@ -22,6 +53,10 @@ interface GridState {
   sortDirection: 'asc' | 'desc' | null;
   filterText: string;
   filteredRows: unknown[];
+  /** 与 filteredRows 等长：每行在 rows 中的原始下标 */
+  rowOriginalIndices: number[];
+  /** 当前选中导航：path 为编码后 pathKey，target 为 key 或 value */
+  selectedNav: { path: string; target: 'key' | 'value' } | null;
 }
 
 export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
@@ -87,6 +122,9 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     }
   }
 
+  const initialIndices: number[] = [];
+  for (let i = 0; i < rows.length; i++) initialIndices.push(i);
+
   const state: GridState = {
     headers, rows, container,
     rowsEl: null!, spacerEl: null!,
@@ -94,7 +132,9 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     colWidths, measured: false,
     rowHeights: [],
     sortColumn: -1, sortDirection: null,
-    filterText: '', filteredRows: rows
+    filterText: '', filteredRows: rows,
+    rowOriginalIndices: initialIndices,
+    selectedNav: null
   };
   currentGridState = state;
 
@@ -143,38 +183,53 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     requestAnimationFrame(() => { syncingScroll = false; });
   });
 
-  // 点击事件委托：展开/折叠 + 定位到编辑器
+  // 点击事件委托：导航定位 + 展开折叠
+  // 叶子 key/value：仅导航；.plus-minus：导航+toggle；expandable 外壳空白：导航+toggle
   rowsEl.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
+    const plusMinus = target.closest('.plus-minus') as HTMLElement | null;
     const expandable = target.closest('.cell-expandable') as HTMLElement | null;
-    if (!expandable) {
-      // 检查是否点击了普通单元格（定位功能）
-      const cell = target.closest('.grid-cell');
-      if (cell) {
-        const key = cell.getAttribute('data-key');
-        const line = cell.getAttribute('data-line');
-        if (line) {
-          // 发送自定义事件通知主线程定位
-          window.dispatchEvent(new CustomEvent('grid-navigate', { detail: { line: Number(line) } }));
-        } else if (key && viewMode === 'object') {
-          // 对象视图的键，尝试定位
-          window.dispatchEvent(new CustomEvent('grid-navigate-key', { detail: { key } }));
-        }
-      }
-      return;
-    }
-    const key = expandable.getAttribute('data-expand-key');
-    if (!key) return;
+    const navEl = target.closest('[data-json-path]') as HTMLElement | null;
 
-    if (expandedCells.has(key)) {
-      expandedCells.delete(key);
-    } else {
-      expandedCells.add(key);
+    let shouldNav = false;
+    let shouldToggle = false;
+
+    if (plusMinus) {
+      shouldNav = true;
+      shouldToggle = true;
+    } else if (navEl && expandable && navEl === expandable) {
+      // 点在 expandable 外壳（含空白），不是嵌套表内叶子
+      shouldNav = true;
+      shouldToggle = true;
+    } else if (navEl) {
+      // 叶子 key/value（含嵌套表内 td.op / td.ov / .grid-cell）
+      shouldNav = true;
+      shouldToggle = false;
     }
-    // 展开/折叠后重测列宽与行高（保留已有 colWidths 作下限，避免回落到 160）
-    state.measured = false;
-    state.rowHeights = [];
-    rerender();
+    // expandable 始终带 data-json-path，会走上面的 navEl 分支，无需 else if (expandable)
+
+    if (shouldNav && navEl) {
+      // path 允许空串：JSON 顶层键 "" 的 data-json-path 为 ""
+      const path = navEl.getAttribute('data-json-path');
+      const navTarget = (navEl.getAttribute('data-nav-target') || 'value') as 'key' | 'value';
+      if (path != null) {
+        state.selectedNav = { path, target: navTarget };
+        dispatchGridNavigate(path, navTarget);
+      }
+    }
+
+    if (shouldToggle && expandable) {
+      const key = expandable.getAttribute('data-expand-key');
+      if (key) {
+        if (expandedCells.has(key)) expandedCells.delete(key);
+        else expandedCells.add(key);
+        // 展开/折叠后重测列宽与行高（保留已有 colWidths 作下限）
+        state.measured = false;
+        state.rowHeights = [];
+      }
+    }
+
+    if (shouldNav || shouldToggle) rerender();
   });
   // 表头点击排序
   headerEl.addEventListener('click', (e) => {
@@ -521,20 +576,30 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
   parts.push('<div class="grid-row">');
 
   if (viewMode === 'array') {
+    // 顶层数组路径用原始数据索引，与 getCellPath 一致（禁止 indexOf 首次命中）
+    const originalIdx = state.rowOriginalIndices[actualIdx] ?? actualIdx;
+    const rowPath = encodePathSegment(String(originalIdx));
     const idxW = state.colWidths[0] || 56;
-    parts.push('<div class="grid-cell grid-index-cell" style="flex:0 0 ' + idxW + 'px" data-line="' + (actualIdx + 1) + '">' + (actualIdx + 1) + '</div>');
+    parts.push('<div class="grid-cell grid-index-cell' + navSelectedClass(state, rowPath, 'value') + '" style="flex:0 0 ' + idxW + 'px"'
+      + ' data-json-path="' + escHtml(rowPath) + '" data-nav-target="value">'
+      + (actualIdx + 1) + '</div>');
     const item = row as Record<string, unknown>;
     for (let h = 1; h < headers.length; h++) {
-      const val = item ? item[headers[h]] : undefined;
+      const field = headers[h];
+      const val = item ? item[field] : undefined;
       const w = state.colWidths[h] || 160;
+      const cellPath = rowPath + '|' + encodePathSegment(field);
       if (isExpandable(val)) {
-        const expandKey = actualIdx + '|' + headers[h];
+        // expandKey 仍用可见行下标，保证展开状态与 expandAll 一致
+        const expandKey = actualIdx + '|' + field;
         const isExpanded = state.expandedCells.has(expandKey);
-        parts.push(renderExpandableCell(val, expandKey, headers[h], isExpanded, w));
+        parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath));
       } else {
         const { display, typeClass } = formatCell(val);
         const truncated = truncateText(display);
-        parts.push('<div class="grid-cell ' + typeClass + '" style="flex:0 0 ' + w + 'px" data-row-idx="' + actualIdx + '" data-col-idx="' + h + '"'
+        parts.push('<div class="grid-cell ' + typeClass + navSelectedClass(state, cellPath, 'value') + '" style="flex:0 0 ' + w + 'px"'
+          + ' data-row-idx="' + actualIdx + '" data-col-idx="' + h + '"'
+          + ' data-json-path="' + escHtml(cellPath) + '" data-nav-target="value"'
           + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
           + '>' + escHtml(truncated.text) + '</div>');
       }
@@ -542,18 +607,24 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
   } else {
     const obj = row as { key: string; val: unknown };
     const keyW = state.colWidths[0] || 160;
-    parts.push('<div class="grid-cell grid-key-cell" style="flex:0 0 ' + keyW + 'px" data-key="' + escHtml(obj.key) + '" data-row-idx="' + actualIdx + '" data-col-idx="0">' + escHtml(obj.key) + '</div>');
+    const keyPath = encodePathSegment(obj.key);
+    parts.push('<div class="grid-cell grid-key-cell' + navSelectedClass(state, keyPath, 'key') + '" style="flex:0 0 ' + keyW + 'px"'
+      + ' data-row-idx="' + actualIdx + '" data-col-idx="0"'
+      + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="key">'
+      + escHtml(obj.key) + '</div>');
     if (isExpandable(obj.val)) {
       const expandKey = actualIdx + '|' + obj.key;
       const isExpanded = state.expandedCells.has(expandKey);
       const valW = state.colWidths[1] || 200;
-      parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW));
+      parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW, keyPath));
     } else {
       const display = obj.val === null ? 'null' : String(obj.val);
       const truncated = truncateText(display);
       const valW = state.colWidths[1] || 200;
       const typeClass = obj.val === null ? 'type-null' : 'type-' + typeof obj.val;
-      parts.push('<div class="grid-cell ' + typeClass + '" style="flex:0 0 ' + valW + 'px" data-row-idx="' + actualIdx + '" data-col-idx="1"'
+      parts.push('<div class="grid-cell ' + typeClass + navSelectedClass(state, keyPath, 'value') + '" style="flex:0 0 ' + valW + 'px"'
+        + ' data-row-idx="' + actualIdx + '" data-col-idx="1"'
+        + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="value"'
         + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
         + '>' + escHtml(truncated.text) + '</div>');
     }
@@ -562,7 +633,14 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
   return parts.join('');
 }
 
-function renderExpandableCell(val: unknown, expandKey: string, headerName: string, isExpanded: boolean, colWidth?: number): string {
+function renderExpandableCell(
+  val: unknown,
+  expandKey: string,
+  headerName: string,
+  isExpanded: boolean,
+  colWidth: number | undefined,
+  jsonPath: string
+): string {
   let expandedLabel = '';
 
   if (Array.isArray(val)) {
@@ -582,12 +660,18 @@ function renderExpandableCell(val: unknown, expandKey: string, headerName: strin
     styleAttr = ' style="flex:0 0 ' + colWidth + 'px"';
   }
 
-  let innerHtml = '<div class="plus-minus">' + expandedLabel + '</div>';
+  const path = jsonPath;
+  const selClass = navSelectedClass(currentGridState, path, 'value');
+  let innerHtml = '<div class="plus-minus' + selClass + '" data-json-path="' + escHtml(path) + '" data-nav-target="value">'
+    + expandedLabel + '</div>';
   if (isExpanded) {
-    innerHtml += renderNestedTable(val, expandKey);
+    // 嵌套表使用 jsonPath 作为真实数据路径前缀
+    innerHtml += renderNestedTable(val, expandKey, path);
   }
 
-  return '<div class="cell-expandable"' + styleAttr + ' data-expand-key="' + escHtml(expandKey) + '">'
+  return '<div class="cell-expandable' + selClass + '"' + styleAttr
+    + ' data-expand-key="' + escHtml(expandKey) + '"'
+    + ' data-json-path="' + escHtml(path) + '" data-nav-target="value">'
     + innerHtml
     + '</div>';
 }
@@ -596,7 +680,8 @@ function renderExpandableCell(val: unknown, expandKey: string, headerName: strin
  * 递归渲染嵌套表格（复刻 jsongrid.com 的 table-in-cell 方式）
  * 每个对象/数组在父 td 内渲染一个独立的 table，不额外缩进
  */
-function renderNestedTable(val: unknown, parentPath: string): string {
+// expandPath: 展开状态键；jsonPath: 真实 JSON 数据路径（用于导航）
+function renderNestedTable(val: unknown, expandPath: string, jsonPath: string): string {
   if (!isExpandable(val)) return '';
 
   const children = getChildren(val);
@@ -607,37 +692,37 @@ function renderNestedTable(val: unknown, parentPath: string): string {
   if (Array.isArray(val)) {
     const allSimple = val.every(v => v === null || typeof v !== 'object');
     if (allSimple) {
-      // 简单值数组：# 和 值 两列 + 嵌套
-      return renderNestedSimpleArrayTable(val, parentPath);
+      return renderNestedSimpleArrayTable(val, expandPath, jsonPath);
     }
-    // 同构对象数组：统一列
     if (isHomogeneousArray(val)) {
-      return renderNestedObjectArrayTable(val, parentPath);
+      return renderNestedObjectArrayTable(val, expandPath, jsonPath);
     }
-    // 异构数组：用 # 和 值 简单展示
-    return renderNestedSimpleArrayTable(val, parentPath);
+    return renderNestedSimpleArrayTable(val, expandPath, jsonPath);
   }
 
-  // 对象模式
-  return renderNestedObjectTable(val as Record<string, unknown>, parentPath);
+  return renderNestedObjectTable(val as Record<string, unknown>, expandPath, jsonPath);
 }
 
-function renderNestedObjectTable(val: Record<string, unknown>, parentPath: string): string {
+function renderNestedObjectTable(val: Record<string, unknown>, expandPath: string, jsonPath: string): string {
   const keys = Object.keys(val);
   let html = '<table border="0" cellspacing="0" cellpadding="0" class="nested-grid-table">';
   for (const k of keys) {
     const cellVal = val[k];
-    const childPath = parentPath + '|' + k;
-    const isExpanded = currentGridState?.expandedCells.has(childPath) === true;
+    const childExpand = expandPath + '|' + k;
+    const childJson = jsonPath + '|' + encodePathSegment(k);
+    const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
     html += '<tr>';
-    html += '<td class="op">' + escHtml(k) + '</td>';
+    html += '<td class="op' + navSelectedClass(currentGridState, childJson, 'key') + '"'
+      + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="key">' + escHtml(k) + '</td>';
     if (isExpandable(cellVal)) {
-      html += '<td class="ov">' + renderExpandableCell(cellVal, childPath, k, isExpanded) + '</td>';
+      html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson) + '</td>';
     } else {
       const display = cellVal === null ? 'null' : String(cellVal);
       const truncated = truncateText(display);
       const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
-      html += '<td class="ov"><span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+      html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+        + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
+        + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
     }
     html += '</tr>';
   }
@@ -645,22 +730,26 @@ function renderNestedObjectTable(val: Record<string, unknown>, parentPath: strin
   return html;
 }
 
-function renderNestedSimpleArrayTable(arr: unknown[], parentPath: string): string {
+function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPath: string): string {
   // 原站简单数组：无表头，仅 序号 | 值
   let html = '<table border="0" cellspacing="0" cellpadding="0" class="nested-grid-table">';
   for (let i = 0; i < arr.length; i++) {
     const item = arr[i];
-    const childPath = parentPath + '|[' + i + ']';
+    const childExpand = expandPath + '|[' + i + ']';
+    const childJson = jsonPath + '|' + encodePathSegment(String(i));
     html += '<tr>';
-    html += '<td class="op">' + (i + 1) + '</td>';
+    html += '<td class="op' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+      + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">' + (i + 1) + '</td>';
     if (isExpandable(item)) {
-      const isExpanded = currentGridState?.expandedCells.has(childPath) === true;
-      html += '<td class="ov">' + renderExpandableCell(item, childPath, '[' + i + ']', isExpanded) + '</td>';
+      const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
+      html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson) + '</td>';
     } else {
       const display = item === null ? 'null' : String(item);
       const truncated = truncateText(display);
       const typeClass = item === null ? 'type-null' : 'type-' + typeof item;
-      html += '<td class="ov"><span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+      html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+        + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
+        + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
     }
     html += '</tr>';
   }
@@ -668,7 +757,7 @@ function renderNestedSimpleArrayTable(arr: unknown[], parentPath: string): strin
   return html;
 }
 
-function renderNestedObjectArrayTable(arr: Record<string, unknown>[], parentPath: string): string {
+function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath: string, jsonPath: string): string {
   const headers = Object.keys(arr[0]);
   let html = '<table border="0" cellspacing="0" cellpadding="0" class="nested-grid-table">';
   // 表头：原站首列为空/# 索引列，其后为字段名
@@ -681,25 +770,50 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], parentPath
   // 数据行
   for (let i = 0; i < arr.length; i++) {
     const item = arr[i];
+    const itemJson = jsonPath + '|' + encodePathSegment(String(i));
     html += '<tr>';
-    html += '<td class="op">' + (i + 1) + '</td>';
+    html += '<td class="op' + navSelectedClass(currentGridState, itemJson, 'value') + '"'
+      + ' data-json-path="' + escHtml(itemJson) + '" data-nav-target="value">' + (i + 1) + '</td>';
     for (const h of headers) {
       const cellVal = item[h];
-      const childPath = parentPath + '|[' + i + ']|' + h;
+      const childExpand = expandPath + '|[' + i + ']|' + h;
+      const childJson = itemJson + '|' + encodePathSegment(h);
       if (isExpandable(cellVal)) {
-        const isExpanded = currentGridState?.expandedCells.has(childPath) === true;
-        html += '<td class="ov">' + renderExpandableCell(cellVal, childPath, h, isExpanded) + '</td>';
+        const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
+        html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson) + '</td>';
       } else {
         const display = cellVal === null ? 'null' : String(cellVal);
         const truncated = truncateText(display);
         const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
-        html += '<td class="ov"><span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+        html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+          + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
+          + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
       }
     }
     html += '</tr>';
   }
   html += '</table>';
   return html;
+}
+
+function navSelectedClass(
+  state: GridState | null,
+  path: string,
+  target: 'key' | 'value'
+): string {
+  if (!state || !state.selectedNav) return '';
+  if (state.selectedNav.path === path && state.selectedNav.target === target) {
+    return ' grid-nav-selected';
+  }
+  return '';
+}
+
+function dispatchGridNavigate(pathKey: string, target: 'key' | 'value'): void {
+  // 保留空字符串段：合法 JSON 键 "" 不能被 filter 掉
+  const segments = decodePathSegments(pathKey);
+  window.dispatchEvent(new CustomEvent('grid-navigate', {
+    detail: { path: segments, target }
+  }));
 }
 
 function escHtml(text: string): string {
@@ -811,74 +925,80 @@ function compareValues(a: unknown, b: unknown): number {
   return summarizeValue(a).localeCompare(summarizeValue(b));
 }
 
-function sortRows(rows: unknown[], colIdx: number, headers: string[], viewMode: string, direction: 'asc' | 'desc'): unknown[] {
-  const sorted = rows.slice();
-
-  sorted.sort((a, b) => {
-    let va: unknown, vb: unknown;
-
-    if (viewMode === 'array') {
-      const ha = a as Record<string, unknown>;
-      const hb = b as Record<string, unknown>;
-      const key = headers[colIdx];
-      va = ha ? ha[key] : undefined;
-      vb = hb ? hb[key] : undefined;
-    } else {
-      const oa = a as { key: string; val: unknown };
-      const ob = b as { key: string; val: unknown };
-      // colIdx: 0=键, 1=值
-      if (colIdx === 0) { va = oa.key; vb = ob.key; }
-      else { va = oa.val; vb = ob.val; }
-    }
-
-    let cmp = compareValues(va, vb);
-    return direction === 'desc' ? -cmp : cmp;
-  });
-
-  return sorted;
-}
-
 // ========== 过滤 ==========
-function filterRows(rows: unknown[], query: string, headers: string[], viewMode: string): unknown[] {
-  if (!query.trim()) return rows;
-  const q = query.toLowerCase();
-
-  return rows.filter(row => {
-    if (viewMode === 'array') {
-      const item = row as Record<string, unknown>;
-      if (!item) return false;
-      // 检查所有列的值
-      for (let h = 1; h < headers.length; h++) {
-        const str = summarizeValue(item[headers[h]]).toLowerCase();
-        if (str.includes(q)) return true;
-      }
-      return false;
-    } else {
-      const obj = row as { key: string; val: unknown };
-      // 检查键和值
-      if (obj.key.toLowerCase().includes(q)) return true;
-      return summarizeValue(obj.val).toLowerCase().includes(q);
+function rowMatchesQuery(row: unknown, q: string, headers: string[], viewMode: string): boolean {
+  if (!q.trim()) return true;
+  if (viewMode === 'array') {
+    const item = row as Record<string, unknown>;
+    if (!item) return false;
+    for (let h = 1; h < headers.length; h++) {
+      const str = summarizeValue(item[headers[h]]).toLowerCase();
+      if (str.includes(q)) return true;
     }
-  });
+    return false;
+  }
+  const obj = row as { key: string; val: unknown };
+  if (obj.key.toLowerCase().includes(q)) return true;
+  return summarizeValue(obj.val).toLowerCase().includes(q);
 }
 
-// 应用排序和过滤，更新 state.filteredRows
-// 索引型 expandKey 会失效，清空展开状态并重测布局
+// 应用排序和过滤，更新 state.filteredRows 与 rowOriginalIndices
+// 索引型 expandKey 会失效，清空展开状态、选中导航并重测布局
 function applySortAndFilter(state: GridState): void {
-  let result = state.rows.slice();
+  // 同步保留原始下标，避免 indexOf 在重复行上首次命中
+  let pairs: { row: unknown; idx: number }[] = [];
+  for (let i = 0; i < state.rows.length; i++) {
+    pairs.push({ row: state.rows[i], idx: i });
+  }
 
   // 先过滤
   if (state.filterText) {
-    result = filterRows(result, state.filterText, state.headers, state.viewMode);
+    const q = state.filterText.toLowerCase();
+    const next: { row: unknown; idx: number }[] = [];
+    for (let i = 0; i < pairs.length; i++) {
+      if (rowMatchesQuery(pairs[i].row, q, state.headers, state.viewMode)) {
+        next.push(pairs[i]);
+      }
+    }
+    pairs = next;
   }
 
   // 再排序
   if (state.sortColumn >= 0 && state.sortDirection) {
-    result = sortRows(result, state.sortColumn, state.headers, state.viewMode, state.sortDirection);
+    const colIdx = state.sortColumn;
+    const headers = state.headers;
+    const viewMode = state.viewMode;
+    const direction = state.sortDirection;
+    pairs.sort((a, b) => {
+      let va: unknown;
+      let vb: unknown;
+      if (viewMode === 'array') {
+        const ha = a.row as Record<string, unknown>;
+        const hb = b.row as Record<string, unknown>;
+        const key = headers[colIdx];
+        va = ha ? ha[key] : undefined;
+        vb = hb ? hb[key] : undefined;
+      } else {
+        const oa = a.row as { key: string; val: unknown };
+        const ob = b.row as { key: string; val: unknown };
+        if (colIdx === 0) { va = oa.key; vb = ob.key; }
+        else { va = oa.val; vb = ob.val; }
+      }
+      const cmp = compareValues(va, vb);
+      return direction === 'desc' ? -cmp : cmp;
+    });
   }
 
-  state.filteredRows = result;
+  const filtered: unknown[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i < pairs.length; i++) {
+    filtered.push(pairs[i].row);
+    indices.push(pairs[i].idx);
+  }
+  state.filteredRows = filtered;
+  state.rowOriginalIndices = indices;
   state.expandedCells.clear();
+  state.selectedNav = null;
   state.measured = false;
   state.rowHeights = [];
 }
@@ -1100,14 +1220,14 @@ function findCell(rowsEl: HTMLElement, rowIdx: number, colIdx: number): HTMLElem
 // 与 startEditing 一致：基于 filteredRows 的可见行索引
 export function getCellPath(rowIdx: number, colIdx: number): string[] | null {
   if (!currentGridState) return null;
-  const { filteredRows, headers, viewMode } = currentGridState;
+  const { filteredRows, headers, viewMode, rowOriginalIndices } = currentGridState;
   const row = filteredRows[rowIdx];
   if (!row) return null;
 
   if (viewMode === 'array') {
-    // 数组视图：路径使用原始数据中的位置索引
-    const originalIdx = currentGridState.rows.indexOf(row);
-    if (originalIdx < 0) return null;
+    // 数组视图：路径使用原始数据中的位置索引（与 filtered 下标对齐）
+    const originalIdx = rowOriginalIndices[rowIdx];
+    if (originalIdx == null || originalIdx < 0) return null;
     return [String(originalIdx), headers[colIdx]];
   } else {
     const obj = row as { key: string; val: unknown };
@@ -1132,12 +1252,17 @@ export function onCellUpdated(newData: unknown): void {
     return;
   }
 
+  const indices: number[] = [];
+  for (let i = 0; i < rows.length; i++) indices.push(i);
+
   currentGridState.rows = rows;
   currentGridState.filteredRows = rows;
+  currentGridState.rowOriginalIndices = indices;
   currentGridState.sortColumn = -1;
   currentGridState.sortDirection = null;
   currentGridState.filterText = '';
   currentGridState.expandedCells.clear();
+  currentGridState.selectedNav = null;
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
   if (gridRerender) gridRerender();

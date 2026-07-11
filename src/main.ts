@@ -70,6 +70,7 @@ function getWorkerCode(): string {
           case 'search': result = searchJSON(payload); break;
           case 'filter': result = filterJSON(payload); break;
           case 'updateCell': result = updateCell(payload); break;
+          case 'locatePath': result = locatePath(payload); break;
         }
         self.postMessage({ id, success: true, result });
       } catch (err) {
@@ -310,6 +311,178 @@ function getWorkerCode(): string {
         updateTime: performance.now() - t
       };
     }
+
+    // 在 pretty JSON 文本中定位路径对应的 key/value 区间
+    // payload: { jsonString, path: string[], target: 'key'|'value' }
+    function locatePath(p) {
+      var t = performance.now();
+      var s = p.jsonString;
+      var path = p.path || [];
+      var target = p.target === 'key' ? 'key' : 'value';
+      if (!s) throw new Error('空文档');
+
+      function skipWs(i) {
+        while (i < s.length) {
+          var c = s.charAt(i);
+          // 注意：Worker 代码在模板字符串中，\\n 才会变成源码里的 \n
+          if (c === ' ' || c === '\\n' || c === '\\r' || c === '\\t') i++;
+          else break;
+        }
+        return i;
+      }
+
+      function parseString(i) {
+        if (s.charAt(i) !== '"') throw new Error('期望字符串 at ' + i);
+        var start = i;
+        i++;
+        while (i < s.length) {
+          var c = s.charAt(i);
+          if (c === '\\\\') { i += 2; continue; }
+          if (c === '"') return { from: start, to: i + 1, next: i + 1, raw: s.substring(start, i + 1) };
+          i++;
+        }
+        throw new Error('未闭合字符串');
+      }
+
+      function skipValue(i) {
+        i = skipWs(i);
+        var c = s.charAt(i);
+        if (c === '"') return parseString(i).next;
+        if (c === '{') {
+          i++;
+          i = skipWs(i);
+          if (s.charAt(i) === '}') return i + 1;
+          while (i < s.length) {
+            var k = parseString(i);
+            i = skipWs(k.next);
+            if (s.charAt(i) !== ':') throw new Error('期望冒号');
+            i = skipValue(i + 1);
+            i = skipWs(i);
+            if (s.charAt(i) === ',') { i = skipWs(i + 1); continue; }
+            if (s.charAt(i) === '}') return i + 1;
+            throw new Error('对象结构错误');
+          }
+        }
+        if (c === '[') {
+          i++;
+          i = skipWs(i);
+          if (s.charAt(i) === ']') return i + 1;
+          while (i < s.length) {
+            i = skipValue(i);
+            i = skipWs(i);
+            if (s.charAt(i) === ',') { i = skipWs(i + 1); continue; }
+            if (s.charAt(i) === ']') return i + 1;
+            throw new Error('数组结构错误');
+          }
+        }
+        // 字面量 null/true/false/number
+        // 模板字符串内需写 \\d / \\. 才能落到 Worker 源码中的 \d / \.
+        var m = s.substring(i).match(/^(null|true|false|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)/);
+        if (m) return i + m[0].length;
+        throw new Error('无法跳过值 at ' + i);
+      }
+
+      function valueRange(i) {
+        i = skipWs(i);
+        var start = i;
+        var end = skipValue(i);
+        return { from: start, to: end, next: end };
+      }
+
+      function findInObject(i, key) {
+        i = skipWs(i);
+        if (s.charAt(i) !== '{') throw new Error('期望对象');
+        i++;
+        i = skipWs(i);
+        if (s.charAt(i) === '}') throw new Error('空对象无键: ' + key);
+        while (i < s.length) {
+          var ks = parseString(i);
+          var keyText = JSON.parse(ks.raw);
+          i = skipWs(ks.next);
+          if (s.charAt(i) !== ':') throw new Error('期望冒号');
+          i++;
+          var valStart = skipWs(i);
+          if (keyText === key) {
+            return { keyFrom: ks.from, keyTo: ks.to, valueFrom: valStart };
+          }
+          i = skipValue(valStart);
+          i = skipWs(i);
+          if (s.charAt(i) === ',') { i = skipWs(i + 1); continue; }
+          if (s.charAt(i) === '}') throw new Error('未找到键: ' + key);
+          throw new Error('对象遍历失败');
+        }
+        throw new Error('未找到键: ' + key);
+      }
+
+      function findInArray(i, index) {
+        i = skipWs(i);
+        if (s.charAt(i) !== '[') throw new Error('期望数组');
+        i++;
+        i = skipWs(i);
+        var idx = 0;
+        if (s.charAt(i) === ']') throw new Error('空数组');
+        while (i < s.length) {
+          var vr = valueRange(i);
+          if (idx === index) {
+            return { valueFrom: vr.from, valueTo: vr.to };
+          }
+          i = skipWs(vr.next);
+          idx++;
+          if (s.charAt(i) === ',') { i = skipWs(i + 1); continue; }
+          if (s.charAt(i) === ']') throw new Error('数组下标越界: ' + index);
+          throw new Error('数组遍历失败');
+        }
+        throw new Error('数组下标越界: ' + index);
+      }
+
+      // 根
+      var pos = skipWs(0);
+      var lastKeyRange = null;
+      var lastValueRange = null;
+
+      if (path.length === 0) {
+        var root = valueRange(pos);
+        return {
+          from: root.from,
+          to: root.to,
+          locateTime: performance.now() - t
+        };
+      }
+
+      for (var pi = 0; pi < path.length; pi++) {
+        var seg = path[pi];
+        pos = skipWs(pos);
+        var ch = s.charAt(pos);
+        if (ch === '{') {
+          var fo = findInObject(pos, String(seg));
+          lastKeyRange = { from: fo.keyFrom, to: fo.keyTo };
+          // 值区间需要完整 skip；下一段从该值起点继续
+          var fullVal = valueRange(fo.valueFrom);
+          lastValueRange = { from: fullVal.from, to: fullVal.to };
+          pos = fullVal.from;
+        } else if (ch === '[') {
+          var ai = Number(seg);
+          if (isNaN(ai)) throw new Error('非法数组下标: ' + seg);
+          var fa = findInArray(pos, ai);
+          lastKeyRange = null;
+          lastValueRange = { from: fa.valueFrom, to: fa.valueTo };
+          pos = fa.valueFrom;
+        } else {
+          throw new Error('路径段无法匹配结构: ' + seg);
+        }
+      }
+
+      var range;
+      if (target === 'key' && lastKeyRange) range = lastKeyRange;
+      else range = lastValueRange;
+      if (!range) throw new Error('无法定位路径');
+
+      return {
+        from: range.from,
+        to: range.to,
+        locateTime: performance.now() - t
+      };
+    }
   `;
 }
 
@@ -317,15 +490,31 @@ function getWorkerCode(): string {
 let inputEditor: EditorView;
 let outputEditor: EditorView;
 let searchDecorations: DecorationSet = Decoration.none;
+let navDecorations: DecorationSet = Decoration.none;
+let navClearTimer: number | undefined;
+/** Grid 导航请求世代号：丢弃乱序/过期的 locatePath 响应 */
+let navGen = 0;
 
 function initEditors() {
-  // ponytail: search highlight 用 ViewPlugin 管理，避免手动清理
+  // ponytail: search/nav highlight 用 ViewPlugin 管理，避免手动清理
   const searchHighlight = ViewPlugin.define(() => ({
     decorations: searchDecorations,
     update(update: ViewUpdate) {
       if (update.docChanged || update.viewportChanged) {
         this.decorations = searchDecorations;
       }
+    }
+  }), { decorations: v => v.decorations });
+
+  const navHighlight = ViewPlugin.define(() => ({
+    decorations: navDecorations,
+    update(update: ViewUpdate) {
+      if (update.docChanged) {
+        // 文档变化后清除导航高亮
+        navDecorations = Decoration.none;
+      }
+      // 始终同步模块级 decorations（含外部 applyNavHighlight 更新）
+      this.decorations = navDecorations;
     }
   }), { decorations: v => v.decorations });
 
@@ -337,7 +526,17 @@ function initEditors() {
       basicSetup,
       json(),
       searchHighlight,
+      navHighlight,
       EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          // 文档变更使进行中的导航失效，并清高亮
+          navGen++;
+          if (navClearTimer !== undefined) {
+            window.clearTimeout(navClearTimer);
+            navClearTimer = undefined;
+          }
+          navDecorations = Decoration.none;
+        }
         if (update.docChanged && !autoFormatting) {
           updateStats('input');
           // debounce 500ms 自动格式化
@@ -708,31 +907,62 @@ function setupEventListeners() {
       setStatus(`更新失败: ${err.message}`, 'error');
     }
   });
-    window.addEventListener('grid-navigate', (e: any) => {
-      const { line } = e.detail;
-      const lineNo = Math.max(0, line - 1);
-      // 滚动编辑器到指定行
-      inputEditor.dispatch({
-        scrollIntoView: true,
-        selection: { anchor: lineNo, head: lineNo }
+  // GridSync：右侧点击路径 → Worker 定位 → 左侧滚动并高亮
+  window.addEventListener('grid-navigate', async (e: Event) => {
+    const detail = (e as CustomEvent).detail as {
+      path?: string[];
+      target?: 'key' | 'value';
+    };
+    // path 可为 ['']（顶层空键）；仅缺省或非数组时拒绝
+    if (!Array.isArray(detail.path)) return;
+    const gen = ++navGen;
+    // 起飞时立刻作废旧高亮，避免竞态下残留上一次导航标记
+    if (navClearTimer !== undefined) {
+      window.clearTimeout(navClearTimer);
+      navClearTimer = undefined;
+    }
+    navDecorations = Decoration.none;
+    inputEditor.dispatch({});
+    try {
+      const jsonString = inputEditor.state.doc.toString();
+      const result = await workerRequest('locatePath', {
+        jsonString,
+        path: detail.path,
+        target: detail.target || 'value'
       });
-    });
-    
-    window.addEventListener('grid-navigate-key', (e: any) => {
-      const { key } = e.detail;
-      const doc = inputEditor.state.doc;
-      const lines = doc.toString().split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes('"' + key + '"') || lines[i].includes(key + '":')) {
-          inputEditor.dispatch({
-            scrollIntoView: true,
-            selection: { anchor: i, head: i }
-          });
-          break;
-        }
-      }
-    });
+      // 乱序/文档已变：丢弃过期响应
+      if (gen !== navGen) return;
+      applyNavHighlight(result.from, result.to);
+      setStatus(
+        '已定位 ' + detail.path.join('.') + ' (' + result.locateTime.toFixed(1) + 'ms)',
+        'success'
+      );
+    } catch (err: any) {
+      if (gen !== navGen) return;
+      setStatus('定位失败: ' + (err.message || String(err)), 'error');
+    }
+  });
   }
+
+function applyNavHighlight(from: number, to: number) {
+  if (from == null || to == null || from < 0 || to < from) return;
+  const docLen = inputEditor.state.doc.length;
+  const f = Math.max(0, Math.min(from, docLen));
+  const t = Math.max(f, Math.min(to, docLen));
+  const mark = Decoration.mark({ class: 'cm-nav-match' });
+  navDecorations = Decoration.set([mark.range(f, t)]);
+  // 单次 dispatch：selection/scroll 会触发 ViewPlugin.update，其始终同步模块级 navDecorations
+  inputEditor.dispatch({
+    selection: { anchor: f, head: t },
+    effects: EditorView.scrollIntoView(f, { y: 'center' })
+  });
+
+  if (navClearTimer !== undefined) window.clearTimeout(navClearTimer);
+  navClearTimer = window.setTimeout(() => {
+    navDecorations = Decoration.none;
+    inputEditor.dispatch({});
+  }, 2500);
+}
 
 // ========== 初始化 ==========
 function init() {
