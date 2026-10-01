@@ -629,8 +629,7 @@ function initTheme() {
   const saved = localStorage.getItem('jsongrid-theme');
   if (saved === 'dark') {
     document.documentElement.setAttribute('data-theme', 'dark');
-    const btn = document.getElementById('btn-theme');
-    if (btn) btn.textContent = '☀️';
+    setThemeIcon(true);
   }
 
   document.getElementById('btn-theme')?.addEventListener('click', () => {
@@ -638,15 +637,23 @@ function initTheme() {
     if (isDark) {
       document.documentElement.removeAttribute('data-theme');
       localStorage.setItem('jsongrid-theme', 'light');
-      const btn = document.getElementById('btn-theme');
-      if (btn) btn.textContent = '🌙';
     } else {
       document.documentElement.setAttribute('data-theme', 'dark');
       localStorage.setItem('jsongrid-theme', 'dark');
-      const btn = document.getElementById('btn-theme');
-      if (btn) btn.textContent = '☀️';
     }
+    // 传切换后的状态：亮色显月亮、暗色显太阳（与原站一致）
+    setThemeIcon(!isDark);
   });
+}
+
+
+/** 主题按钮图标：亮色显月亮（点击去暗色），暗色显太阳（点击回亮色） */
+const MOON_PATH = 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z';
+const SUN_PATH = 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-13a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1zm0 14a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1zM4.2 5.6a1 1 0 0 1 1.4 0l1.4 1.4A1 1 0 1 1 5.6 8.4L4.2 7a1 1 0 0 1 0-1.4zm12.8 12.8a1 1 0 0 1 1.4 0l1.4 1.4a1 1 0 1 1-1.4 1.4l-1.4-1.4a1 1 0 0 1 0-1.4zM3 12a1 1 0 0 1 1-1h2a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1zm14 0a1 1 0 0 1 1-1h2a1 1 0 1 1 0 2h-2a1 1 0 0 1-1-1zM5.6 15.6a1 1 0 0 1 0 1.4l-1.4 1.4a1 1 0 1 1-1.4-1.4l1.4-1.4a1 1 0 0 1 1.4 0zm12.8-12.8a1 1 0 0 1 0 1.4l-1.4 1.4a1 1 0 1 1-1.4-1.4l1.4-1.4a1 1 0 0 1 1.4 0z';
+
+function setThemeIcon(isDark: boolean) {
+  const icon = document.querySelector('#btn-theme .round-icon path');
+  if (icon) icon.setAttribute('d', isDark ? SUN_PATH : MOON_PATH);
 }
 
 // ========== URL 参数 ==========
