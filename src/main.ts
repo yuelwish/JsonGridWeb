@@ -1,5 +1,6 @@
 import './style.css';
 import { EditorView, basicSetup } from 'codemirror';
+import { openSearchPanel } from '@codemirror/search';
 import { Decoration, ViewPlugin } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
@@ -494,7 +495,6 @@ function getWorkerCode(): string {
 
 // ========== 编辑器 ==========
 let inputEditor: EditorView;
-let searchDecorations: DecorationSet = Decoration.none;
 let navDecorations: DecorationSet = Decoration.none;
 let errorClearTimer: number | undefined;
 let errorDecorations: DecorationSet = Decoration.none;
@@ -517,16 +517,7 @@ const originalSiteHighlight = HighlightStyle.define([
 ]);
 
 function initEditors() {
-  // ponytail: search/nav highlight 用 ViewPlugin 管理，避免手动清理
-  const searchHighlight = ViewPlugin.define(() => ({
-    decorations: searchDecorations,
-    update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged) {
-        this.decorations = searchDecorations;
-      }
-    }
-  }), { decorations: v => v.decorations });
-
+  // ponytail: nav highlight 用 ViewPlugin 管理，避免手动清理
   const navHighlight = ViewPlugin.define(() => ({
     decorations: navDecorations,
     update(update: ViewUpdate) {
@@ -557,7 +548,6 @@ function initEditors() {
       basicSetup,
       json(),
       syntaxHighlighting(originalSiteHighlight),
-      searchHighlight,
       navHighlight,
       errorHighlight,
       EditorView.updateListener.of((update) => {
@@ -632,39 +622,6 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
   }
 }
 
-// ========== 搜索高亮 ==========
-function highlightSearchMatches(matches: Array<{ match: string }>) {
-  const editor = inputEditor;
-  const doc = editor.state.doc.toString();
-  const query = matches.length > 0 ? matches[0].match : '';
-  if (!query) {
-    searchDecorations = Decoration.none;
-    inputEditor.dispatch({});
-    return;
-  }
-
-  const ql = query.toLowerCase();
-  const decorations: any[] = [];
-  const mark = Decoration.mark({ class: 'cm-search-match' });
-
-  // 在整个文档中查找匹配
-  const lines = doc.split('\n');
-  let offset = 0;
-  for (const line of lines) {
-    const ll = line.toLowerCase();
-    let pos = 0;
-    while (pos < ll.length) {
-      const idx = ll.indexOf(ql, pos);
-      if (idx === -1) break;
-      decorations.push(mark.range(offset + idx, offset + idx + query.length));
-      pos = idx + 1;
-    }
-    offset += line.length + 1;
-  }
-
-  searchDecorations = Decoration.set(decorations.sort((a: any, b: any) => a.from - b.from));
-  inputEditor.dispatch({});
-}
 
 // ========== 主题切换 ==========
 function initTheme() {
@@ -863,36 +820,17 @@ function setupEventListeners() {
 
   document.getElementById('btn-clear')?.addEventListener('click', () => {
     inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: '' } });
-    searchDecorations = Decoration.none;
     inputEditor.dispatch({});
     updateStats();
+    // 联动清空右侧 GRID
+    const gridView = document.getElementById('grid-view');
+    if (gridView) gridView.innerHTML = '';
     setStatus('已清空');
   });
 
-  // 搜索 + 高亮
-  const searchInput = document.getElementById('search-input') as HTMLInputElement;
-  let searchTimeout: number;
-  searchInput?.addEventListener('input', (e) => {
-    clearTimeout(searchTimeout);
-    const query = (e.target as HTMLInputElement).value;
-    if (!query.trim()) {
-      searchDecorations = Decoration.none;
-      inputEditor.dispatch({});
-      setStatus('就绪');
-      return;
-    }
-    searchTimeout = window.setTimeout(async () => {
-      const input = inputEditor.state.doc.toString();
-      if (!input.trim()) return;
-      try {
-        setStatus('搜索中...');
-        const result = await workerRequest('search', { jsonString: input, query });
-        highlightSearchMatches(result.results);
-        setStatus(`找到 ${result.total} 个匹配 (${fmtMs(result.searchTime)}ms)`, 'success');
-      } catch (err: any) {
-        setStatus(`搜索失败: ${err.message}`, 'error');
-      }
-    }, 300);
+  // 搜索：打开 CodeMirror 内置搜索面板（原站 Search 按钮同款行为）
+  document.getElementById('btn-search')?.addEventListener('click', () => {
+    openSearchPanel(inputEditor);
   });
 
    // 分隔条：‹ 右侧全屏 / › 左侧全屏；▶ 把左侧 JSON 格式化渲染到右侧 GRID
@@ -964,12 +902,9 @@ function setupEventListeners() {
     });
   });
 
-  // Grid 视图：搜索（复用顶部搜索框聚焦）
+  // Grid 视图：搜索（同样打开编辑器搜索面板）
   document.getElementById('grid-btn-search')?.addEventListener('click', () => {
-    const si = document.getElementById('search-input') as HTMLInputElement;
-    si.focus();
-    si.select();
-    setStatus('在顶部搜索框输入关键词', 'info');
+    openSearchPanel(inputEditor);
   });
 
   // Grid 视图：导出 CSV（行号列 ⋮ 菜单暂未做，暂留键盘入口）

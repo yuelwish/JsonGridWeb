@@ -93,28 +93,6 @@ body {
   gap: 0.5rem;
 }
 
-/* 搜索输入框 */
-.search-input {
-  padding: 0.375rem 0.75rem;
-  border: 1px solid var(--border-color);
-  border-radius: 0.375rem;
-  font-size: 0.875rem;
-  width: 200px;
-  background: var(--bg-color);
-  color: var(--text-color);
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-.search-input::placeholder {
-  color: var(--text-muted);
-}
-
-.search-input:focus {
-  outline: none;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
-}
-
 /* 主题切换按钮 */
 .theme-toggle {
   padding: 0.375rem;
@@ -190,13 +168,6 @@ body {
 
 [data-theme="dark"] .tool-btn:hover {
   background: rgba(255, 255, 255, 0.15);
-}
-
-/* 搜索输入框深色主题 */
-[data-theme="dark"] .search-input {
-  background: var(--bg-color);
-  color: var(--text-color);
-  border-color: var(--border-color);
 }
 
 /* 单编辑器舞台：全宽，分屏时左右两面板 */
@@ -379,27 +350,25 @@ body {
   overflow: hidden;
 }
 
-/* 彩色图标按钮（原站 icon-button 色值） */
+/* 彩色图标按钮（原站 icon-button 色值，纯图标无文字） */
 .strip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
   border: none;
   border-radius: 3px;
   color: #fff;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.5;
-  white-space: nowrap;
   transition: filter 0.12s;
 }
 
 .strip-btn:hover { filter: brightness(1.12); }
 .strip-btn:active { filter: brightness(0.92); }
 
-.strip-btn .bi { width: 12px; height: 12px; flex-shrink: 0; }
+.strip-btn .bi { width: 13px; height: 13px; flex-shrink: 0; }
 
 .strip-btn[data-color="gray"] { background: #607d8b; }
 .strip-btn[data-color="blue"] { background: #2196f3; }
