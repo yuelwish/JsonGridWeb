@@ -637,6 +637,9 @@ let searchPanelObserver: MutationObserver | null = null;
 function customizeSearchPanel() {
   const panel = document.querySelector('.cm-panel.cm-search') as HTMLElement | null;
   if (!panel) return;
+  // 防重入：CM 每次打开都会重建面板 DOM，但同一次打开内可能多次调用
+  if (panel.dataset.customized === '1') return;
+  panel.dataset.customized = '1';
 
   // 面板定位：贴 JSON 编辑器右上角（读取实际几何，避免视口公式漂移）
   requestAnimationFrame(() => {
@@ -668,15 +671,14 @@ function customizeSearchPanel() {
   // 替换行默认收起：把 replace 输入行包进可折叠容器
   // CM 面板是扁平结构（replace input 的 parent 就是面板），必须逐个隐藏替换行元素
   const replaceField = panel.querySelector('input[name=replace]') as HTMLElement | null;
-  const replaceBtns: HTMLElement[] = [...panel.querySelectorAll('button')].filter(b => /replace/i.test(b.textContent || ''));
   const replaceEls: HTMLElement[] = [];
   if (replaceField) {
-    // 替换行 = replace input + 其后所有 replace 按钮之间的兄弟节点
+    // 替换行 = replace input 直到 close 按钮之前的所有兄弟节点
     let node: Element | null = replaceField;
     while (node) {
+      if ((node as HTMLButtonElement).name === 'close') break;
       const el = node as HTMLElement;
       replaceEls.push(el);
-      if (el.matches('button') && replaceBtns.includes(el as HTMLButtonElement) && replaceEls.length > 1) break;
       node = el.nextElementSibling;
     }
     replaceEls.forEach(el => { el.style.display = 'none'; });
@@ -739,7 +741,8 @@ function customizeSearchPanel() {
     counterPending = true;
     setTimeout(() => { counterPending = false; updateCounter(); }, 150);
   });
-  searchPanelObserver.observe(document.getElementById('editor-container')!, { subtree: true, attributes: true, attributeFilter: ['class'], childList: false });
+  // CM 渲染搜索高亮是新增装饰 span（childList）+ class 标记，两类都要监听
+  searchPanelObserver.observe(document.getElementById('editor-container')!, { subtree: true, attributes: true, attributeFilter: ['class'], childList: true });
 }
 
 // ========== 主题切换 ==========
