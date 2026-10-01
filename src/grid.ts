@@ -41,7 +41,9 @@ function decodePathSegments(pathKey: string): string[] {
 interface GridState {
   headers: string[];
   rows: unknown[];
+  /** 两轴滚动源：.virtual-grid-body（高度 = 可视区，滚动条固定在底边） */
   container: HTMLElement;
+  headerEl: HTMLElement | null;
   rowsEl: HTMLElement;
   spacerEl: HTMLElement;
   expandedCells: Set<string>;
@@ -51,7 +53,6 @@ interface GridState {
   measured: boolean;
   sortColumn: number;
   sortDirection: 'asc' | 'desc' | null;
-  filterText: string;
   filteredRows: unknown[];
   /** 与 filteredRows 等长：每行在 rows 中的原始下标 */
   rowOriginalIndices: number[];
@@ -59,8 +60,16 @@ interface GridState {
   selectedNav: { path: string; target: 'key' | 'value' } | null;
 }
 
+// 搜索状态（匹配集/当前项）变化时广播，供主线程的搜索面板刷新计数。
+// 编辑单元格、排序、新数据渲染都可能改变匹配，面板上的 N of M 不会自动跟上。
+function notifySearchChanged(): void {
+  window.dispatchEvent(new CustomEvent('grid-search-changed'));
+}
+
 export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
   container.innerHTML = '';
+  if (searchState) notifySearchChanged();
+  searchState = null; // 新数据渲染时清除旧搜索高亮
 
   let headers: string[];
   let rows: unknown[];
@@ -127,12 +136,12 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
 
   const state: GridState = {
     headers, rows, container,
-    rowsEl: null!, spacerEl: null!,
+    rowsEl: null!, spacerEl: null!, headerEl: null,
     expandedCells, viewMode,
     colWidths, measured: false,
     rowHeights: [],
     sortColumn: -1, sortDirection: null,
-    filterText: '', filteredRows: rows,
+    filteredRows: rows,
     rowOriginalIndices: initialIndices,
     selectedNav: null
   };
@@ -161,12 +170,16 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
 
   state.rowsEl = rowsEl;
   state.spacerEl = spacer;
+  state.container = body;
+  state.headerEl = headerEl;
 
   function rerender() { renderVisibleRows(state); }
   gridRerender = rerender;
 
-  // ponytail: 垂直滚动由 container 处理，横向滚动由 body 处理
-  container.addEventListener('scroll', rerender);
+  // 纵向滚动与横向滚动都在 body 上：它的高度 = 可视区高，滚动条贴底可见；
+  // spacer（总行高）只在 body 内部溢出，不把 body 撑高。
+  // 横向另需同步给 header（header 自身也可横向滚）。
+  body.addEventListener('scroll', rerender);
   
   // 横向滚动同步：body 为主，header 为从
   let syncingScroll = false;
@@ -259,7 +272,9 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     }
 
     applySortAndFilter(state);
+    if (searchState) recomputeSearch();
     rerender();
+    applySearchHeaderHighlight();
     updateHeaderIndicators(headerEl, state);
   });
   // 双击编辑单元格
@@ -538,7 +553,7 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
 
 // 把测量后的列宽同步到表头，保证头/身对齐
 function syncHeaderWidths(state: GridState): void {
-  const headerEl = state.container.querySelector('.virtual-grid-header') as HTMLElement | null;
+  const headerEl = state.headerEl;
   if (!headerEl) return;
   headerEl.style.display = 'flex';
   const cells = headerEl.children;
@@ -556,6 +571,9 @@ function syncHeaderWidths(state: GridState): void {
 
 // 临时解除宽度约束后测量真实内容宽度
 function measureUnconstrainedWidth(el: HTMLElement): number {
+  // 搜索高亮带 padding/border（padding:1px 5px + 1px 红框），参与测量会让列宽在检索时跳动 → 测量期间中和
+  const hl = el.querySelector('.jg-search-cur, .jg-search-soft');
+  if (hl) hl.classList.add('jg-search-nomeasure');
   const prev = {
     flex: el.style.flex,
     width: el.style.width,
@@ -569,6 +587,7 @@ function measureUnconstrainedWidth(el: HTMLElement): number {
   el.style.maxWidth = 'none';
   el.style.overflow = 'visible';
   const w = Math.ceil(Math.max(el.offsetWidth, el.scrollWidth));
+  if (hl) hl.classList.remove('jg-search-nomeasure');
   el.style.flex = prev.flex;
   el.style.width = prev.width;
   el.style.minWidth = prev.minWidth;
@@ -587,7 +606,7 @@ function measureColumnWidths(state: GridState, rowsEl: HTMLElement, numCols: num
   }
 
   // header 文本宽度
-  const headerEl = state.container.querySelector('.virtual-grid-header') as HTMLElement | null;
+  const headerEl = state.headerEl;
   if (headerEl) {
     const headerCells = headerEl.children;
     for (let c = 0; c < headerCells.length && c < numCols; c++) {
@@ -644,7 +663,7 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
         // expandKey 仍用可见行下标，保证展开状态与 expandAll 一致
         const expandKey = actualIdx + '|' + field;
         const isExpanded = state.expandedCells.has(expandKey);
-        parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath));
+        parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath, searchCellClass(actualIdx, h)));
       } else {
         const { display, typeClass } = formatCell(val);
         const truncated = truncateText(display);
@@ -652,7 +671,7 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
           + ' data-row-idx="' + actualIdx + '" data-col-idx="' + h + '"'
           + ' data-json-path="' + escHtml(cellPath) + '" data-nav-target="value"'
           + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
-          + '>' + escHtml(truncated.text) + '</div>');
+          + '><span class="cell-text' + searchCellClass(actualIdx, h) + '">' + escHtml(truncated.text) + '</span></div>');
       }
     }
   } else {
@@ -662,12 +681,12 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
     parts.push('<div class="grid-cell grid-key-cell' + navSelectedClass(state, keyPath, 'key') + '" style="flex:0 0 ' + keyW + 'px"'
       + ' data-row-idx="' + actualIdx + '" data-col-idx="0"'
       + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="key">'
-      + escHtml(obj.key) + '</div>');
+      + '<span class="cell-text' + searchCellClass(actualIdx, 0) + '">' + escHtml(obj.key) + '</span></div>');
     if (isExpandable(obj.val)) {
       const expandKey = actualIdx + '|' + obj.key;
       const isExpanded = state.expandedCells.has(expandKey);
       const valW = state.colWidths[1] || 200;
-      parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW, keyPath));
+      parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW, keyPath, searchCellClass(actualIdx, 1)));
     } else {
       const display = obj.val === null ? 'null' : String(obj.val);
       const truncated = truncateText(display);
@@ -677,7 +696,7 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
         + ' data-row-idx="' + actualIdx + '" data-col-idx="1"'
         + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="value"'
         + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
-        + '>' + escHtml(truncated.text) + '</div>');
+        + '><span class="cell-text' + searchCellClass(actualIdx, 1) + '">' + escHtml(truncated.text) + '</span></div>');
     }
   }
   parts.push('</div>');
@@ -690,7 +709,8 @@ function renderExpandableCell(
   headerName: string,
   isExpanded: boolean,
   colWidth: number | undefined,
-  jsonPath: string
+  jsonPath: string,
+  searchCls: string
 ): string {
   let expandedLabel = '';
 
@@ -713,7 +733,7 @@ function renderExpandableCell(
 
   const path = jsonPath;
   const selClass = navSelectedClass(currentGridState, path, 'value');
-  let innerHtml = '<div class="plus-minus' + selClass + '" data-json-path="' + escHtml(path) + '" data-nav-target="value">'
+  let innerHtml = '<div class="plus-minus' + selClass + searchCls + '" data-json-path="' + escHtml(path) + '" data-nav-target="value">'
     + expandedLabel + '</div>';
   if (isExpanded) {
     // 嵌套表使用 jsonPath 作为真实数据路径前缀
@@ -766,7 +786,7 @@ function renderNestedObjectTable(val: Record<string, unknown>, expandPath: strin
     html += '<td class="op' + navSelectedClass(currentGridState, childJson, 'key') + '"'
       + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="key">' + escHtml(k) + '</td>';
     if (isExpandable(cellVal)) {
-      html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson) + '</td>';
+      html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson, '') + '</td>';
     } else {
       const display = cellVal === null ? 'null' : String(cellVal);
       const truncated = truncateText(display);
@@ -793,7 +813,7 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
       + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">' + (i + 1) + '</td>';
     if (isExpandable(item)) {
       const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
-      html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson) + '</td>';
+      html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '') + '</td>';
     } else {
       const display = item === null ? 'null' : String(item);
       const truncated = truncateText(display);
@@ -831,7 +851,7 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
       const childJson = itemJson + '|' + encodePathSegment(h);
       if (isExpandable(cellVal)) {
         const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
-        html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson) + '</td>';
+        html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '') + '</td>';
       } else {
         const display = cellVal === null ? 'null' : String(cellVal);
         const truncated = truncateText(display);
@@ -1006,24 +1026,6 @@ function compareValues(a: unknown, b: unknown): number {
 }
 
 // ========== 过滤 ==========
-function rowMatchesQuery(row: unknown, q: string, headers: string[], viewMode: string): boolean {
-  if (!q.trim()) return true;
-  if (viewMode === 'array') {
-    const item = row as Record<string, unknown>;
-    if (!item) return false;
-    for (let h = 1; h < headers.length; h++) {
-      const str = summarizeValue(item[headers[h]]).toLowerCase();
-      if (str.includes(q)) return true;
-    }
-    return false;
-  }
-  const obj = row as { key: string; val: unknown };
-  if (obj.key.toLowerCase().includes(q)) return true;
-  return summarizeValue(obj.val).toLowerCase().includes(q);
-}
-
-// 应用排序和过滤，更新 state.filteredRows 与 rowOriginalIndices
-// 索引型 expandKey 会失效，清空展开状态、选中导航并重测布局
 function applySortAndFilter(state: GridState): void {
   // 同步保留原始下标，避免 indexOf 在重复行上首次命中
   let pairs: { row: unknown; idx: number }[] = [];
@@ -1031,19 +1033,8 @@ function applySortAndFilter(state: GridState): void {
     pairs.push({ row: state.rows[i], idx: i });
   }
 
-  // 先过滤
-  if (state.filterText) {
-    const q = state.filterText.toLowerCase();
-    const next: { row: unknown; idx: number }[] = [];
-    for (let i = 0; i < pairs.length; i++) {
-      if (rowMatchesQuery(pairs[i].row, q, state.headers, state.viewMode)) {
-        next.push(pairs[i]);
-      }
-    }
-    pairs = next;
-  }
-
-  // 再排序
+  // 应用排序，更新 state.filteredRows 与 rowOriginalIndices
+  // 索引型 expandKey 会失效，清空展开状态、选中导航并重测布局
   if (state.sortColumn >= 0 && state.sortDirection) {
     const colIdx = state.sortColumn;
     const headers = state.headers;
@@ -1148,26 +1139,188 @@ function csvEscape(val: string): string {
   return val;
 }
 
-// ========== 过滤 API ==========
-export function setFilterText(text: string): void {
+
+
+// ========== Grid 搜索（复刻原站 app-search-panel：高亮 + N of M 导航，不过滤行） ==========
+interface SearchMatch { row: number; col: number; isHeader: boolean; }
+interface GridSearchState {
+  query: string;
+  matches: SearchMatch[];
+  current: number;
+  cellKeys: Set<string>;
+  headerCols: Set<number>;
+  /** 匹配数是否触顶（超过 MAX_MATCHES 后停止收集，UI 需显示 “N of MAX+”） */
+  truncated: boolean;
+}
+/** 匹配上限：主线程全表扫描，命中过多时截断，避免百万级对象把标签页拖死 */
+const MAX_MATCHES = 5000;
+let searchState: GridSearchState | null = null;
+
+// 与渲染文本一致的匹配源：叶子用完整值，可展开单元格用「字段名 + 摘要」
+function searchCellText(val: unknown, fieldName: string): string {
+  if (isExpandable(val)) {
+    return fieldName + (Array.isArray(val) ? ' [' + val.length + ']' : ' {}');
+  }
+  if (val === null || val === undefined) return val === null ? 'null' : '';
+  return String(val);
+}
+
+function recomputeSearch(): void {
+  if (!searchState || !currentGridState) return;
+  const q = searchState.query.toLowerCase();
+  const { headers, filteredRows, viewMode } = currentGridState;
+  const matches: SearchMatch[] = [];
+  const cellKeys = new Set<string>();
+  const headerCols = new Set<number>();
+  let truncated = false;
+  // 列头匹配（原站把 title 也纳入搜索，且列头排最前）
+  const headStart = viewMode === 'array' ? 1 : 0;
+  for (let h = headStart; h < headers.length; h++) {
+    if (headers[h].toLowerCase().includes(q)) {
+      matches.push({ row: -1, col: h, isHeader: true });
+      headerCols.add(h);
+    }
+  }
+  for (let r = 0; r < filteredRows.length && !truncated; r++) {
+    const row = filteredRows[r];
+    if (viewMode === 'array') {
+      const item = row as Record<string, unknown>;
+      for (let h = 1; h < headers.length; h++) {
+        const val = item ? item[headers[h]] : undefined;
+        if (searchCellText(val, headers[h]).toLowerCase().includes(q)) {
+          matches.push({ row: r, col: h, isHeader: false });
+          cellKeys.add(r + ',' + h);
+          if (matches.length >= MAX_MATCHES) { truncated = true; break; }
+        }
+      }
+    } else {
+      const obj = row as { key: string; val: unknown };
+      if (String(obj.key).toLowerCase().includes(q)) {
+        matches.push({ row: r, col: 0, isHeader: false });
+        cellKeys.add(r + ',0');
+      }
+      if (searchCellText(obj.val, obj.key).toLowerCase().includes(q)) {
+        matches.push({ row: r, col: 1, isHeader: false });
+        cellKeys.add(r + ',1');
+      }
+      if (matches.length >= MAX_MATCHES) truncated = true;
+    }
+  }
+  searchState.matches = matches;
+  searchState.cellKeys = cellKeys;
+  searchState.headerCols = headerCols;
+  searchState.truncated = truncated;
+  searchState.current = matches.length ? 0 : -1;
+  notifySearchChanged();
+}
+
+/** 设置搜索词：全量重算匹配（同步，万行级 < 数 ms），空串清除 */
+export function setSearchText(text: string): void {
   if (!currentGridState) return;
-  currentGridState.filterText = text;
-  currentGridState.sortColumn = -1;
-  currentGridState.sortDirection = null;
-  applySortAndFilter(currentGridState);
+  const q = text.trim();
+  if (!q) {
+    searchState = null;
+    applySearchHeaderHighlight();
+    if (gridRerender) gridRerender();
+    return;
+  }
+  searchState = { query: q, matches: [], current: -1, cellKeys: new Set<string>(), headerCols: new Set<number>(), truncated: false };
+  recomputeSearch();
+  applySearchHeaderHighlight();
+  scrollSearchMatchIntoView();
   if (gridRerender) gridRerender();
 }
 
-// 获取当前过滤后的行数
-export function getFilteredCount(): number {
-  if (!currentGridState) return 0;
-  return currentGridState.filteredRows.length;
+/** Previous / Next：钳制在 [0, total-1]，不环绕（与原站一致） */
+export function searchStep(dir: -1 | 1): void {
+  if (!searchState || searchState.matches.length === 0) return;
+  const next = searchState.current + dir;
+  if (next < 0 || next >= searchState.matches.length) return;
+  searchState.current = next;
+  applySearchHeaderHighlight();
+  scrollSearchMatchIntoView();
+  if (gridRerender) gridRerender();
 }
 
-// 获取总行数
-export function getTotalCount(): number {
-  if (!currentGridState) return 0;
-  return currentGridState.rows.length;
+export interface GridSearchInfo {
+  active: boolean;
+  query: string;
+  total: number;
+  /** 1-based；0 表示无匹配 */
+  current: number;
+  /** 匹配数是否触顶（UI 需显示 “N of MAX+”） */
+  truncated: boolean;
+  /** truncated 为 true 时的匹配上限，供 UI 显示 */
+  limit: number;
+}
+
+export function getSearchInfo(): GridSearchInfo {
+  if (!searchState) return { active: false, query: '', total: 0, current: 0, truncated: false, limit: MAX_MATCHES };
+  return {
+    active: true,
+    query: searchState.query,
+    total: searchState.matches.length,
+    current: searchState.current >= 0 ? searchState.current + 1 : 0,
+    truncated: searchState.truncated,
+    limit: MAX_MATCHES
+  };
+}
+
+// 当前匹配的列头高亮（title 紧贴文本，同原站 search-highlight）
+function applySearchHeaderHighlight(): void {
+  if (!currentGridState) return;
+  const headerEl = currentGridState.headerEl;
+  if (!headerEl) return;
+  const titles = headerEl.querySelectorAll('.header-title');
+  for (let i = 0; i < titles.length; i++) {
+    const el = titles[i] as HTMLElement;
+    const cell = el.closest('.grid-cell') as HTMLElement | null;
+    const colIdx = cell ? Number(cell.dataset.colIndex) : -1;
+    el.classList.remove('jg-search-cur', 'jg-search-soft');
+    if (!searchState || colIdx < 0) continue;
+    if (!searchState.headerCols.has(colIdx)) continue;
+    const isCur = searchState.matches[searchState.current] ? searchState.matches[searchState.current].isHeader
+      && searchState.matches[searchState.current].col === colIdx : false;
+    el.classList.add(isCur ? 'jg-search-cur' : 'jg-search-soft');
+  }
+}
+
+// 当前匹配滚动到可视区（垂直按行高前缀和，水平按列宽前缀和）
+// 注意：累加上限必须与 renderVisibleRows 的 rowOffsets 一致（那边遍历到总行数）。
+// rowHeights 是稀疏数组（只测过可见窗口），不能拿它的 length 当行数上界。
+function scrollSearchMatchIntoView(): void {
+  if (!searchState || !currentGridState) return;
+  const m = searchState.matches[searchState.current];
+  if (!m) return;
+  const state = currentGridState;
+  if (!m.isHeader) {
+    let off = 0;
+    for (let i = 0; i < m.row; i++) off += state.rowHeights[i] || ROW_HEIGHT;
+    const h = state.rowHeights[m.row] || ROW_HEIGHT;
+    const target = Math.max(0, off - state.container.clientHeight / 3);
+    if (off < state.container.scrollTop + state.container.clientHeight * 0.3
+      || off + h > state.container.scrollTop + state.container.clientHeight) {
+      state.container.scrollTop = target;
+    }
+  }
+  // 水平：滚动 body 让目标列进入视野（header 会经 scroll 监听同步）
+  const body = state.container.querySelector('.virtual-grid-body') as HTMLElement | null;
+  if (body) {
+    let colLeft = 0;
+    for (let c = 0; c < m.col && c < state.colWidths.length; c++) colLeft += state.colWidths[c];
+    const colW = state.colWidths[m.col] || 120;
+    if (colLeft < body.scrollLeft || colLeft + colW > body.scrollLeft + body.clientWidth) {
+      body.scrollLeft = Math.max(0, colLeft - 60);
+    }
+  }
+}
+
+// 渲染行内单元格时的搜索高亮 class（软高亮 = 普通匹配，强高亮 = 当前匹配）
+function searchCellClass(row: number, col: number): string {
+  if (!searchState || !searchState.cellKeys.has(row + ',' + col)) return '';
+  const m = searchState.matches[searchState.current];
+  if (m && !m.isHeader && m.row === row && m.col === col) return ' jg-search-cur';
+  return ' jg-search-soft';
 }
 // ========== 单元格编辑 ==========
 interface EditState {
@@ -1408,10 +1561,12 @@ export function onCellUpdated(newData: unknown): void {
   currentGridState.rowOriginalIndices = indices;
   currentGridState.sortColumn = -1;
   currentGridState.sortDirection = null;
-  currentGridState.filterText = '';
   currentGridState.expandedCells.clear();
   currentGridState.selectedNav = null;
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  // 编辑改变了数据 → 重算搜索匹配与列头高亮，否则红框/计数停留在旧值上
+  if (searchState) recomputeSearch();
+  applySearchHeaderHighlight();
   if (gridRerender) gridRerender();
 }

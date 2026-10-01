@@ -6,7 +6,7 @@ import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
-import { renderVirtualGrid, expandAll, collapseAll, exportToCSV, setFilterText, getFilteredCount, getTotalCount, getCellPath, onCellUpdated, decodePathKey } from './grid';
+import { renderVirtualGrid, expandAll, collapseAll, exportToCSV, getCellPath, onCellUpdated, decodePathKey, setSearchText, searchStep, getSearchInfo } from './grid';
 import { SAMPLE_JSON } from './sample-data';
 
 // ========== Worker 管理 ==========
@@ -626,11 +626,11 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
 
 
 /**
- * 搜索面板原站化（原站 Ace 布局）：
- * - 关闭 × 移到右上角
- * - next/previous/all 改图标钮（‹ › all）
- * - 替换行默认收起（点 + 展开）
- * - 底部选项行：+ / 匹配计数 / .* / Aa / \b
+ * 搜索面板复刻原站 Ace searchbox：
+ * - 三行结构：表单行（Search for + ‹ › All）/ 替换行（Replace with + Replace + All，默认收起）
+ *   / 选项行（+ 计数器靠左，.* Aa \b 靠右）
+ * - 按钮顺序、文案、CSS 画箭头、悬停/选中态、无匹配红框全部对齐原站
+ * - 关闭 × 绝对定位右上角；面板贴内容区右上角锚定、宽度收缩到自然宽（约 371px，同原站）
  */
 let searchPanelObserver: MutationObserver | null = null;
 
@@ -641,99 +641,136 @@ function customizeSearchPanel() {
   if (panel.dataset.customized === '1') return;
   panel.dataset.customized = '1';
 
-  // 面板定位：贴 JSON 编辑器右上角。CM 异步渲染面板，双 rAF 等 DOM 稳定后再量。
+  const searchField = panel.querySelector('input[name=search]') as HTMLInputElement | null;
+  const prevBtn = panel.querySelector('button[name=prev]') as HTMLElement | null;
+  const nextBtn = panel.querySelector('button[name=next]') as HTMLElement | null;
+  const allBtn = panel.querySelector('button[name=select]') as HTMLElement | null;
+  const replaceField = panel.querySelector('input[name=replace]') as HTMLElement | null;
+  const replaceBtn = panel.querySelector('button[name=replace]') as HTMLElement | null;
+  const replaceAllBtn = panel.querySelector('button[name=replaceAll]') as HTMLElement | null;
+  const closeBtn = panel.querySelector('button[name=close]') as HTMLElement | null;
+
+  // CM 面板是扁平 DOM，重组为原站的三行结构。
+  // CM 的按钮监听器直接绑在节点上（onclick/onchange），在面板内搬移是安全的；
+  // Esc 等按键走面板容器的事件委托，同样不受影响。
+  const formRow = document.createElement('div');
+  formRow.className = 'jg-search-form';
+  if (searchField && prevBtn && nextBtn && allBtn) {
+    // 原站顺序：输入框、‹ 上一个、› 下一个、All
+    formRow.appendChild(searchField);
+    formRow.appendChild(prevBtn);
+    formRow.appendChild(nextBtn);
+    formRow.appendChild(allBtn);
+    panel.insertBefore(formRow, panel.firstChild);
+  }
+
+  const replaceRow = document.createElement('div');
+  replaceRow.className = 'jg-replace-form';
+  if (replaceField && replaceBtn && replaceAllBtn) {
+    replaceRow.appendChild(replaceField);
+    replaceRow.appendChild(replaceBtn);
+    replaceRow.appendChild(replaceAllBtn);
+    replaceRow.style.display = 'none'; // 替换行默认收起，点 + 展开
+  }
+  panel.insertBefore(replaceRow, formRow.nextSibling);
+
+  // CM 原生 label（case/re/word 复选框）与 br 隐藏，选项行改用按钮驱动
+  const labels = [...panel.querySelectorAll('label')] as HTMLElement[];
+  labels.forEach(l => { l.style.display = 'none'; });
+  panel.querySelectorAll('br').forEach(br => { (br as HTMLElement).style.display = 'none'; });
+
+  // 文案与属性对齐原站
+  if (searchField) searchField.setAttribute('placeholder', 'Search for');
+  if (replaceField) replaceField.setAttribute('placeholder', 'Replace with');
+  if (replaceBtn) replaceBtn.textContent = 'Replace';
+  if (replaceAllBtn) replaceAllBtn.textContent = 'All';
+  if (allBtn) { allBtn.textContent = 'All'; allBtn.setAttribute('title', 'Alt-Enter'); }
+  // 导航箭头由 CSS ::after 绘制（原站画法），清空按钮文字
+  if (prevBtn) { prevBtn.textContent = ''; prevBtn.setAttribute('aria-label', 'previous'); }
+  if (nextBtn) { nextBtn.textContent = ''; nextBtn.setAttribute('aria-label', 'next'); }
+
+  // 选项行：+ 展开替换 / 匹配计数 / .* 正则 / Aa 大小写 / \b 全词（原站顺序与标题）
+  const optRow = document.createElement('div');
+  optRow.className = 'jg-search-options';
+  const plusBtn = document.createElement('button');
+  plusBtn.type = 'button';
+  plusBtn.className = 'jg-opt jg-opt-replace';
+  plusBtn.textContent = '+';
+  plusBtn.title = 'Toggle Replace mode';
+  plusBtn.addEventListener('click', () => {
+    const show = replaceRow.style.display === 'none';
+    replaceRow.style.display = show ? '' : 'none';
+  });
+  optRow.appendChild(plusBtn);
+
+  const counter = document.createElement('span');
+  counter.className = 'jg-search-counter';
+  counter.textContent = '0 of 0';
+  optRow.appendChild(counter);
+
+  const toggleSpecs: Array<{ name: string; text: string; title: string }> = [
+    { name: 're', text: '.*', title: 'RegExp Search' },
+    { name: 'case', text: 'Aa', title: 'CaseSensitive Search' },
+    { name: 'word', text: '\\b', title: 'Whole Word Search' }
+  ];
+  for (const spec of toggleSpecs) {
+    const label = labels.find(l => {
+      const cb = l.querySelector('input[type=checkbox]') as HTMLInputElement | null;
+      return cb !== null && cb.name === spec.name;
+    });
+    if (!label) continue;
+    const cb = label.querySelector('input[type=checkbox]') as HTMLInputElement;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'jg-opt';
+    btn.textContent = spec.text;
+    btn.title = spec.title;
+    if (cb.checked) btn.classList.add('jg-opt-checked');
+    btn.addEventListener('click', () => {
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change', { bubbles: true }));
+      btn.classList.toggle('jg-opt-checked', cb.checked);
+    });
+    optRow.appendChild(btn);
+  }
+  panel.appendChild(optRow);
+
+  if (closeBtn) closeBtn.classList.add('jg-search-close');
+
+  // 面板定位：贴 JSON 编辑器内容区右上角（顶部齐平、右缘齐平），宽度收缩到内容自然宽
+  // （原站 ace_search.right 是 right:0 锚定 + shrink-to-fit，约 371px，不是通栏）。
+  // CM 异步渲染面板，双 rAF 等 DOM 稳定后再量。
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const panels = panel.closest('.cm-panels') as HTMLElement | null;
     const editor = document.getElementById('editor-container');
     if (!panels || !editor) return;
     const er = editor.getBoundingClientRect();
     panels.style.position = 'fixed';
-    panels.style.top = Math.round(er.top + 8) + 'px';
-    panels.style.bottom = 'auto'; /* CM 默认 bottom:0 会把容器拉伸到全高，面板被推到底部 */
+    panels.style.top = Math.round(er.top) + 'px';
     panels.style.width = 'max-content'; /* 容器是全宽 block，量宽会得到视口宽 */
+    panels.style.bottom = 'auto'; /* CM 默认 bottom:0 会把容器拉伸到全高，面板被推到底部 */
     const pw = panel.getBoundingClientRect().width || 376;
-    const left = Math.max(0, Math.round(er.right - pw - 8));
-    panels.style.left = left + 'px';
-    panels.style.zIndex = '30';
+    panels.style.left = Math.max(0, Math.round(er.right - pw)) + 'px';
+    panels.style.zIndex = '99';
   }));
 
-  // 导航钮改图标（不动 DOM 顺序，CM 受管节点移动会导致面板重建异常）
-  const nextBtn = panel.querySelector('button[name=next]');
-  const prevBtn = panel.querySelector('button[name=prev]');
-  const allBtn = panel.querySelector('button[name=all]');
-  const closeBtn = panel.querySelector('button[name=close]');
-  if (nextBtn) { nextBtn.textContent = '›'; nextBtn.setAttribute('title', '下一个 (Enter)'); }
-  if (prevBtn) { prevBtn.textContent = '‹'; prevBtn.setAttribute('title', '上一个 (Shift+Enter)'); }
-  if (allBtn) { allBtn.textContent = 'all'; allBtn.setAttribute('title', '选择全部匹配'); }
-  if (closeBtn) { closeBtn.textContent = '×'; closeBtn.classList.add('search-close-top'); }
-
-  // 替换行默认收起：把 replace 输入行包进可折叠容器
-  // CM 面板是扁平结构（replace input 的 parent 就是面板），必须逐个隐藏替换行元素
-  const replaceField = panel.querySelector('input[name=replace]') as HTMLElement | null;
-  const replaceEls: HTMLElement[] = [];
-  if (replaceField) {
-    // 替换行 = replace input 直到 close 按钮之前的所有兄弟节点
-    let node: Element | null = replaceField;
-    while (node) {
-      if ((node as HTMLButtonElement).name === 'close') break;
-      const el = node as HTMLElement;
-      replaceEls.push(el);
-      node = el.nextElementSibling;
-    }
-    replaceEls.forEach(el => { el.style.display = 'none'; });
-  }
-
-  // 底部选项行：改造成原站样式（+ 展开替换 / 计数 / .* / Aa / \b）
-  const labels = [...panel.querySelectorAll('label')];
-  // labels: [case, regexp, words]（CM 默认顺序）
-  const optRow = document.createElement('div');
-  optRow.className = 'search-options-row';
-  const plusBtn = document.createElement('button');
-  plusBtn.className = 'search-opt-btn';
-  plusBtn.textContent = '+';
-  plusBtn.setAttribute('title', 'Toggle Replace');
-  plusBtn.addEventListener('click', () => {
-    if (!replaceEls.length) return;
-    const show = replaceEls[0].style.display === 'none';
-    replaceEls.forEach(el => { el.style.display = show ? '' : 'none'; });
-    plusBtn.textContent = show ? '+' : '−';
-  });
-  const counter = document.createElement('span');
-  counter.className = 'search-counter';
-  counter.textContent = '0 of 0';
-  optRow.appendChild(plusBtn);
-  optRow.appendChild(counter);
-  labels.forEach(l => {
-    const cb = l.querySelector('input[type=checkbox]') as HTMLInputElement | null;
-    const name = cb ? cb.name : '';
-    const btn = document.createElement('button');
-    btn.className = 'search-opt-btn';
-    if (name === 'case') { btn.textContent = 'Aa'; btn.title = '区分大小写'; }
-    else if (name === 're') { btn.textContent = '.*'; btn.title = '正则表达式'; }
-    else if (name === 'word') { btn.textContent = String.fromCharCode(92) + 'b'; btn.title = '全词匹配'; }
-    if (cb) {
-      // checkbox 藏进按钮，点击同步
-      l.style.display = 'none';
-      btn.addEventListener('click', () => {
-        cb.checked = !cb.checked;
-        cb.dispatchEvent(new Event('change', { bubbles: true }));
-        btn.classList.toggle('search-opt-active', cb.checked);
-      });
-    }
-    optRow.appendChild(btn);
-  });
-  panel.appendChild(optRow);
-
-  // 计数器：监听匹配高亮数量（只监听编辑器 content 的 class 属性变化 + 节流，避免滚动重绘风暴）
+  // 计数器与无匹配红框：监听编辑器匹配高亮变化（节流，避免滚动重绘风暴）
   if (searchPanelObserver) searchPanelObserver.disconnect();
   let counterPending = false;
   const updateCounter = () => {
     const current = document.querySelector('.cm-panel.cm-search');
     if (!current) { searchPanelObserver!.disconnect(); searchPanelObserver = null; return; }
-    const total = document.querySelectorAll('#editor-container .cm-searchMatch').length;
-    const sel = document.querySelectorAll('#editor-container .cm-searchMatch-selected').length;
-    const c = current.querySelector('.search-counter');
-    if (c) c.textContent = sel + ' of ' + total;
+    const matches = Array.from(document.querySelectorAll('#editor-container .cm-searchMatch'));
+    const sel = document.querySelector('#editor-container .cm-searchMatch-selected');
+    let idx = sel ? matches.indexOf(sel) + 1 : 0;
+    if (idx === 0 && matches.length > 0) idx = 1;
+    const c = current.querySelector('.jg-search-counter');
+    if (c) c.textContent = idx + ' of ' + matches.length;
+    const form = current.querySelector('.jg-search-form');
+    if (form) {
+      const q = (current.querySelector('input[name=search]') as HTMLInputElement | null)?.value || '';
+      form.classList.toggle('jg-nomatch', q.length > 0 && matches.length === 0);
+    }
   };
   searchPanelObserver = new MutationObserver(() => {
     if (counterPending) return;
@@ -1004,61 +1041,132 @@ function setupEventListeners() {
     collapseAll();
   });
 
-  // Grid 视图：过滤（Advanced Filter 弹出输入框）
-  let filterTimer: number;
-  document.getElementById('grid-btn-filter')?.addEventListener('click', () => {
-    const existing = document.getElementById('grid-filter-popover');
-    if (existing) { existing.remove(); return; }
-    const pop = document.createElement('div');
-    pop.id = 'grid-filter-popover';
-    pop.innerHTML = '<input id="grid-filter-input" type="text" class="grid-filter-input" placeholder="输入关键词过滤行...">';
-    document.getElementById('panel-grid')!.appendChild(pop);
-    const input = pop.querySelector('input')!;
-    input.focus();
-    input.addEventListener('input', (e) => {
-      clearTimeout(filterTimer);
-      const query = (e.target as HTMLInputElement).value;
-      filterTimer = window.setTimeout(() => {
-        setFilterText(query);
-        const total = getTotalCount();
-        const filtered = getFilteredCount();
-        if (query) {
-          setStatus(`过滤: ${filtered} / ${total} 行`, 'info');
-        } else {
-          setStatus('就绪');
-        }
-      }, 200);
-    });
-  });
-
-  // Grid 视图：搜索（原站行为 = 表格右上角弹出 query-input，实时过滤行）
+  // Grid 视图：搜索（1:1 复刻原站 app-search-panel）
+  // 原站时序实测：keyup 立即置 'Searching...' -> 1000ms 防抖 -> 再延迟 2000ms 才真正检索高亮
+  const GS_DEBOUNCE_MS = 1000;
+  const GS_DELAY_MS = 2000;
+  // 原站 PrimeIcons 字体（primeicons.svg）的真实字形：pi-angle-left / pi-angle-right / pi-times
+  const PI_ANGLE_LEFT = 'M645.785 123.096c-0.077 0-0.174 0-0.264 0-15.744 0-29.987 6.434-40.247 16.814l-267.57 267.57c-10.36 10.374-16.768 24.697-16.768 40.517s6.404 30.147 16.768 40.517v0l267.566 265.27c8.804 5.784 19.594 9.224 31.197 9.224 31.667 0 57.335-25.671 57.335-57.335 0-10.424-2.782-20.194-7.64-28.617l0.144 0.274-229.343-229.343 229.343-229.343c10.36-10.374 16.768-24.697 16.768-40.517s-6.404-30.147-16.768-40.517v0c-9.987-9.044-23.307-14.584-37.917-14.584-0.914 0-1.824 0.023-2.732 0.064l0.124-0.004z';
+  const PI_ANGLE_RIGHT = 'M377.809 122.106c-16.204 0.566-30.605 7.836-40.589 19.11l-0.054 0.059c-10.396 10.404-16.822 24.776-16.822 40.643s6.424 30.235 16.822 40.645v0l230.044 230.044-230.044 230.044c-2.746 6.474-4.334 14.004-4.334 21.905 0 31.765 25.748 57.513 57.513 57.513 10.324 0 20.016-2.723 28.392-7.484l-0.286 0.149 268.384-268.384c10.396-10.406 16.822-24.773 16.822-40.643s-6.424-30.236-16.822-40.645v0l-268.384-263.783c-10.036-11.334-24.433-18.607-40.543-19.164l-0.096-0.006z';
+  const PI_TIMES = 'M586.932 448l312.455 312.455c10.394 9.708 16.875 23.488 16.875 38.79 0 29.283-23.737 53.020-53.020 53.020-15.299 0-29.084-6.481-38.759-16.841l-0.027-0.029-312.455-312.455-312.455 312.455c-9.444 8.816-22.161 14.228-36.145 14.228-29.283 0-53.020-23.737-53.020-53.020 0-13.985 5.412-26.701 14.261-36.174l-0.027 0.029 312.455-312.455-312.455-312.455c-9.582-9.589-15.504-22.839-15.504-37.468s5.926-27.874 15.504-37.469v0c9.589-9.582 22.839-15.504 37.468-15.504s27.874 5.926 37.469 15.504v0l312.455 312.455 312.455-312.455c9.589-9.582 22.839-15.504 37.468-15.504s27.874 5.926 37.469 15.504v0c9.582 9.589 15.504 22.839 15.504 37.468s-5.926 27.874-15.504 37.469v0z';
+  const piIcon = (d: string, size: number) =>
+    '<svg class="jg-gs-icon" width="' + size + '" height="' + size + '" viewBox="0 0 1024 1024" aria-hidden="true"><path d="' + d + '"/></svg>';
   document.getElementById('grid-btn-search')?.addEventListener('click', () => {
-    const existing = document.getElementById('grid-search-popover');
-    if (existing) {
-      existing.remove();
-      setFilterText('');
-      setStatus('就绪');
-      return;
-    }
-    const pop = document.createElement('input');
+    // 原站 openSearch() 只置 showSearch=true：面板已开时再点按钮不做任何事（不切换关闭）
+    if (document.getElementById('grid-search-popover')) return;
+    const host = document.getElementById('panel-grid')!;
+    const searchBtn = document.getElementById('grid-btn-search')!;
+    const pop = document.createElement('div');
     pop.id = 'grid-search-popover';
-    pop.type = 'text';
-    pop.placeholder = 'Search in grid...';
-    document.getElementById('panel-grid')!.appendChild(pop);
-    pop.focus();
-    let timer: number | undefined;
-    pop.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        setFilterText(pop.value);
-        const total = getTotalCount();
-        const filtered = getFilteredCount();
-        setStatus(pop.value ? `过滤: ${filtered} / ${total} 行` : '就绪', pop.value ? 'info' : 'info');
-      }, 200);
+    pop.innerHTML =
+      '<div class="jg-gs-main">' +
+        '<input class="query-input" type="text">' +
+        '<button type="button" class="jg-gs-btn jg-gs-nav" data-act="prev" title="Previous">' + piIcon(PI_ANGLE_LEFT, 14) + '</button>' +
+        '<button type="button" class="jg-gs-btn jg-gs-nav" data-act="next" title="Next">' + piIcon(PI_ANGLE_RIGHT, 14) + '</button>' +
+        '<button type="button" class="jg-gs-btn jg-gs-clear" data-act="clear" title="Clear">' + piIcon(PI_TIMES, 14) + '</button>' +
+      '</div>' +
+      '<div class="jg-gs-status" hidden>' +
+        '<div class="jg-gs-count"></div>' +
+        '<div class="jg-gs-limit">*<a href="#" class="limitations-link">Limitations</a></div>' +
+      '</div>';
+    host.appendChild(pop);
+
+    // 原站 ngAfterViewInit：left = 触发按钮右缘 - 300px，top = 触发按钮下缘 + 5px
+    const hostRect = host.getBoundingClientRect();
+    const btnRect = searchBtn.getBoundingClientRect();
+    pop.style.left = Math.round(btnRect.right - hostRect.left - 300) + 'px';
+    pop.style.top = Math.round(btnRect.bottom - hostRect.top + 5) + 'px';
+
+    const input = pop.querySelector('input') as HTMLInputElement;
+    const statusRow = pop.querySelector('.jg-gs-status') as HTMLElement;
+    const countEl = pop.querySelector('.jg-gs-count') as HTMLElement;
+    let debounceTimer = 0;
+    let delayTimer = 0;
+
+    const setStatusText = (text: string) => {
+      statusRow.hidden = !text;
+      countEl.textContent = text;
+    };
+
+    const refreshStatus = () => {
+      const info = getSearchInfo();
+      // 检索尚未完成（防抖/延迟窗口内 searchState 为空）：保留 'Searching...'，
+      // 原站此时 searchElements 为空，prev/next 不动，状态行不会凭空消失
+      if (!info.active && !statusRow.hidden) return;
+      if (!info.active || !info.query) { setStatusText(''); return; }
+      if (info.total === 0) { setStatusText('Not Found'); return; }
+      setStatusText(info.current + ' of ' + (info.truncated ? info.limit + '+' : info.total));
+    };
+
+    // *Limitations：原站 PrimeNG 模态框（header "Search Limitations"，宽 50vw）
+    let dialog: HTMLElement | null = null;
+    const closeLimitations = () => {
+      if (!dialog) return;
+      dialog.remove();
+      dialog = null;
+    };
+    const openLimitations = () => {
+      if (dialog) return;
+      dialog = document.createElement('div');
+      dialog.className = 'jg-gs-dialog-mask';
+      dialog.innerHTML =
+        '<div class="jg-gs-dialog" role="dialog" aria-modal="true" aria-label="Search Limitations">' +
+          '<div class="jg-gs-dialog-header"><span>Search Limitations</span>' +
+          '<button type="button" class="jg-gs-dialog-close" title="Close">' + piIcon(PI_TIMES, 16) + '</button></div>' +
+          '<div class="jg-gs-dialog-content"><div class="limitations-text">' +
+          'Please note that the search applies only to the data currently displayed in the Grid. ' +
+          "Hidden tables and data (due to paging) won't be included in the search results or count. " +
+          "For a complete search and accurate count, please use the Json Editor's search function. " +
+          '</div></div>' +
+        '</div>';
+      dialog.addEventListener('click', (e) => {
+        const t = e.target as HTMLElement;
+        if (t === dialog || t.closest('.jg-gs-dialog-close')) closeLimitations();
+      });
+      document.body.appendChild(dialog);
+    };
+
+    // ✕ Clear：原站 clearSearchHighlights() + closeSearch 事件 —— 面板只有关闭按钮能关
+    const closePanel = () => {
+      clearTimeout(debounceTimer);
+      clearTimeout(delayTimer);
+      window.removeEventListener('grid-search-changed', refreshStatus);
+      closeLimitations();
+      pop.remove();
+      setSearchText('');
+      setStatus('就绪');
+    };
+
+    input.addEventListener('keyup', () => {
+      setStatusText(input.value ? 'Searching...' : '');
+      clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        setSearchText(''); // 原站 clearSearchHighlights()
+        if (!input.value) return;
+        clearTimeout(delayTimer);
+        delayTimer = window.setTimeout(() => {
+          setSearchText(input.value);
+          refreshStatus();
+        }, GS_DELAY_MS);
+      }, GS_DEBOUNCE_MS);
     });
-    pop.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { pop.remove(); setFilterText(''); }
+
+    pop.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('button.jg-gs-btn') as HTMLElement | null;
+      if (!btn) return;
+      const act = btn.dataset.act;
+      // 原站 prev/next 首末位不环绕，且按钮不做禁用态
+      if (act === 'prev') { searchStep(-1); refreshStatus(); }
+      else if (act === 'next') { searchStep(1); refreshStatus(); }
+      else if (act === 'clear') closePanel();
     });
+    pop.querySelector('.limitations-link')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      openLimitations();
+    });
+    // 编辑单元格 / 排序 / 新数据渲染会改变匹配集，这里同步面板计数
+    window.addEventListener('grid-search-changed', refreshStatus);
+    input.focus();
   });
 
   // Grid 视图：导出 CSV（行号列 ⋮ 菜单暂未做，暂留键盘入口）
