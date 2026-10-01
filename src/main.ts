@@ -618,7 +618,8 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
   const el = document.getElementById('status-message');
   if (el) {
     el.textContent = msg;
-    el.style.color = type === 'error' ? 'var(--error-color)' : type === 'success' ? 'var(--success-color)' : 'var(--text-muted)';
+    // 颜色统一：成功/普通都用默认灰，仅错误标红
+    el.style.color = type === 'error' ? 'var(--error-color)' : 'var(--text-muted)';
   }
 }
 
