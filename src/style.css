@@ -535,17 +535,14 @@ body {
 }
 
 .status-bar #left-stats {
-  flex: 1;
+  flex: 0 0 auto;
   text-align: left;
 }
 
+/* 状态消息靠右下角（反馈类消息：格式化/渲染/加载耗时等） */
 .status-bar #status-message {
-  flex: 0 0 auto;
+  margin-left: auto;
   padding: 0 1rem;
-}
-
-.status-bar #right-stats {
-  flex: 1;
   text-align: right;
 }
 
