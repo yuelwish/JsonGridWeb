@@ -659,81 +659,119 @@ body {
 
 
 
+/* 搜索面板：原站 Ace 精确规格（376 宽、输入 251×28 fs14、导航钮白底无边框、选项钮 19×19 透明） */
 .cm-panel.cm-search {
   background: #d4d4d4;
   border: none;
   border-radius: 0 0 0 5px;
-  padding: 6px 8px;
-  max-width: 376px;
+  padding: 4px 6px 0 4px;
+  width: 376px;
+  font-size: 14px;
+  position: relative;
 }
 
 [data-theme="dark"] .cm-panel.cm-search {
   background: #3f3f3f;
 }
 
-.cm-panel.cm-search label,
-.cm-panel.cm-search button {
-  color: #222;
-}
-
-.cm-panel.cm-search input[type="text"],
-.cm-panel.cm-search input:not([type]) {
+/* 搜索/替换输入框：28 高 fs14，搜索框仅左侧圆角（与导航钮拼成一排） */
+.cm-panel.cm-search input[name=search],
+.cm-panel.cm-search input[name=replace] {
+  width: 200px;
+  height: 28px;
   background: #fff;
-  color: #111;
-  border: 1px solid #aaa;
-  border-radius: 3px;
-  height: 26px;
+  color: #000;
+  border: 1px solid #ddd;
+  border-radius: 3px 0 0 3px;
+  font-size: 14px;
   padding: 2px 6px;
+  box-sizing: border-box;
+  vertical-align: middle;
 }
 
-.cm-panel.cm-search button {
-  background: #f0f0f0;
-  border: 1px solid #999;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.cm-panel.cm-search button:hover {
+/* 导航钮：29×28 白底无边框（原站 prev/next 与输入框连排） */
+.cm-panel.cm-search button[name=next],
+.cm-panel.cm-search button[name=prev] {
+  width: 29px;
+  height: 28px;
   background: #fff;
-}
-
-[data-theme="dark"] .cm-panel.cm-search label,
-[data-theme="dark"] .cm-panel.cm-search button {
-  color: #ccc;
-}
-
-[data-theme="dark"] .cm-panel.cm-search button {
-  background: #555;
-  border-color: #777;
-}
-
-[data-theme="dark"] .cm-panel.cm-search button:hover {
-  background: #666;
-}
-
-/* 搜索面板底部选项行（原站 ace_search_options：+/计数/正则/大小写/全词） */
-.search-options-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 5px;
-}
-
-.search-opt-btn {
-  min-width: 24px;
-  height: 22px;
-  padding: 0 5px;
-  background: #f0f0f0;
-  border: 1px solid #999;
-  border-radius: 3px;
-  color: #222;
+  border: none;
+  border-radius: 0;
+  color: #666;
+  font-size: 14px;
   cursor: pointer;
-  font-size: 12px;
+  padding: 0;
+  vertical-align: middle;
+}
+
+/* All 钮：37×28 右圆角收尾 */
+.cm-panel.cm-search button[name=select] {
+  width: 37px;
+  height: 28px;
+  background: #fff;
+  border: none;
+  border-radius: 0 3px 3px 0;
+  color: #666;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  vertical-align: middle;
+}
+
+/* 替换按钮（展开后） */
+.cm-panel.cm-search button[name=replace],
+.cm-panel.cm-search button[name=replaceAll] {
+  height: 28px;
+  background: #fff;
+  border: none;
+  border-radius: 3px;
+  color: #666;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* 关闭 ×：右上角小圆钮 */
+.cm-panel.cm-search button[name=close] {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: #656565;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.cm-panel.cm-search button[name=close]:hover {
+  color: #000;
+}
+
+.cm-panel.cm-search label {
+  color: #222;
+  font-size: 14px;
+}
+
+/* 选项行按钮：19×19 透明底细边框 fs14（原站 ace_button） */
+.search-opt-btn {
+  min-width: 19px;
+  height: 19px;
+  padding: 0 3px;
+  background: transparent;
+  border: 0.8px solid rgba(100, 100, 100, 0.23);
+  border-radius: 0;
+  color: #000;
+  cursor: pointer;
+  font-size: 14px;
   line-height: 1;
 }
 
 .search-opt-btn:hover {
-  background: #fff;
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .search-opt-btn.search-opt-active {
@@ -742,33 +780,56 @@ body {
   color: #fff;
 }
 
+/* 计数器：fs14 #343434 */
 .search-counter {
-  color: #555;
-  font-size: 12px;
-  margin: 0 4px;
-  min-width: 48px;
-}
-
-/* 关闭钮移到右上角（原站 ace_searchbtn_close） */
-.cm-panel.cm-search button.search-close-top {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  background: transparent;
-  border: none;
+  color: #343434;
   font-size: 14px;
-  width: 20px;
-  height: 20px;
-  padding: 0;
+  margin: 0 6px;
+  min-width: 51px;
 }
 
-.cm-panel.cm-search {
-  position: relative;
+/* 选项行 */
+.search-options-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding-bottom: 4px;
 }
 
-[data-theme="dark"] .cm-panel.cm-search button.search-close-top {
+[data-theme="dark"] .cm-panel.cm-search input[name=search],
+[data-theme="dark"] .cm-panel.cm-search input[name=replace] {
+  background: #2b2b2b;
+  color: #ddd;
+  border-color: #555;
+}
+
+[data-theme="dark"] .cm-panel.cm-search button[name=next],
+[data-theme="dark"] .cm-panel.cm-search button[name=prev],
+[data-theme="dark"] .cm-panel.cm-search button[name=select],
+[data-theme="dark"] .cm-panel.cm-search button[name=replace],
+[data-theme="dark"] .cm-panel.cm-search button[name=replaceAll] {
+  background: #2b2b2b;
+  color: #bbb;
+}
+
+[data-theme="dark"] .cm-panel.cm-search button[name=close] {
   background: transparent;
+  color: #aaa;
+}
+
+[data-theme="dark"] .cm-panel.cm-search label {
   color: #ccc;
+}
+
+[data-theme="dark"] .search-opt-btn {
+  background: transparent;
+  border-color: rgba(180, 180, 180, 0.3);
+  color: #ccc;
+}
+
+[data-theme="dark"] .search-counter {
+  color: #aaa;
 }
 
 [data-theme="dark"] .search-opt-btn {
