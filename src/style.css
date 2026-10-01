@@ -29,19 +29,20 @@
 }
 
 [data-theme="dark"] {
+  /* 原站暗色为中性灰系（idle-fingers）：非蓝黑 */
   --primary-color: #60a5fa;
   --primary-hover: #93bbfc;
-  --bg-color: #0f172a;
-  --surface-color: #1e293b;
-  --border-color: #334155;
-  --text-color: #e2e8f0;
-  --text-muted: #64748b;
+  --bg-color: #3b3b3b;
+  --surface-color: #323232;
+  --border-color: #555555;
+  --text-color: #c0c0c0;
+  --text-muted: #999999;
   --success-color: #4ade80;
   --error-color: #f87171;
   --warning-color: #fbbf24;
-  --hover-color: #1e293b;
-  --active-color: #334155;
-  --property-name: #f1f5f9;
+  --hover-color: #454545;
+  --active-color: #4a4a4a;
+  --property-name: #ffffff;
 }
 
 body {
@@ -1039,7 +1040,7 @@ body {
 }
 
 [data-theme="dark"] .grid-index-cell {
-  color: #949494;
+  color: #999999;
 }
 
 /* 对象视图的键名列 */
