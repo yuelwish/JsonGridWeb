@@ -291,6 +291,7 @@ body {
   min-width: 0;
   overflow: hidden;
   background: var(--surface-color);
+  position: relative;
 }
 
 .editor-stage:not(.split) .panel-json {
@@ -1473,4 +1474,27 @@ body {
 .virtual-grid-wrapper {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 13px;
+}
+
+/* GRID 搜索弹出框（原站 query-input：白底圆角，贴 GRID 标题条右下） */
+#grid-search-popover {
+  position: absolute;
+  top: 46px;
+  right: 12px;
+  z-index: 30;
+  width: 162px;
+  height: 24px;
+  padding: 2px 8px;
+  background: #fff;
+  color: #111;
+  border: 1px solid #767676;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+}
+
+[data-theme="dark"] #grid-search-popover {
+  background: #454545;
+  color: #ddd;
+  border-color: #666;
 }

@@ -641,8 +641,8 @@ function customizeSearchPanel() {
   if (panel.dataset.customized === '1') return;
   panel.dataset.customized = '1';
 
-  // 面板定位：贴 JSON 编辑器右上角（读取实际几何，避免视口公式漂移）
-  requestAnimationFrame(() => {
+  // 面板定位：贴 JSON 编辑器右上角。CM 异步渲染面板，双 rAF 等 DOM 稳定后再量。
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     const panels = panel.closest('.cm-panels') as HTMLElement | null;
     const editor = document.getElementById('editor-container');
     if (!panels || !editor) return;
@@ -650,13 +650,12 @@ function customizeSearchPanel() {
     panels.style.position = 'fixed';
     panels.style.top = Math.round(er.top + 8) + 'px';
     panels.style.bottom = 'auto'; /* CM 默认 bottom:0 会把容器拉伸到全高，面板被推到底部 */
-    // 先量面板宽再定位右缘
-    panels.style.left = '0px';
-    const pw = panels.getBoundingClientRect().width || 376;
-    const left = Math.max(0, Math.round(er.right - pw - 6));
+    panels.style.width = 'max-content'; /* 容器是全宽 block，量宽会得到视口宽 */
+    const pw = panel.getBoundingClientRect().width || 376;
+    const left = Math.max(0, Math.round(er.right - pw - 8));
     panels.style.left = left + 'px';
     panels.style.zIndex = '30';
-  });
+  }));
 
   // 导航钮改图标（不动 DOM 顺序，CM 受管节点移动会导致面板重建异常）
   const nextBtn = panel.querySelector('button[name=next]');
@@ -1032,10 +1031,34 @@ function setupEventListeners() {
     });
   });
 
-  // Grid 视图：搜索（同样打开编辑器搜索面板）
+  // Grid 视图：搜索（原站行为 = 表格右上角弹出 query-input，实时过滤行）
   document.getElementById('grid-btn-search')?.addEventListener('click', () => {
-    openSearchPanel(inputEditor);
-    customizeSearchPanel();
+    const existing = document.getElementById('grid-search-popover');
+    if (existing) {
+      existing.remove();
+      setFilterText('');
+      setStatus('就绪');
+      return;
+    }
+    const pop = document.createElement('input');
+    pop.id = 'grid-search-popover';
+    pop.type = 'text';
+    pop.placeholder = 'Search in grid...';
+    document.getElementById('panel-grid')!.appendChild(pop);
+    pop.focus();
+    let timer: number | undefined;
+    pop.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        setFilterText(pop.value);
+        const total = getTotalCount();
+        const filtered = getFilteredCount();
+        setStatus(pop.value ? `过滤: ${filtered} / ${total} 行` : '就绪', pop.value ? 'info' : 'info');
+      }, 200);
+    });
+    pop.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { pop.remove(); setFilterText(''); }
+    });
   });
 
   // Grid 视图：导出 CSV（行号列 ⋮ 菜单暂未做，暂留键盘入口）
