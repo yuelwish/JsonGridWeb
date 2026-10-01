@@ -624,6 +624,124 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
 }
 
 
+
+/**
+ * 搜索面板原站化（原站 Ace 布局）：
+ * - 关闭 × 移到右上角
+ * - next/previous/all 改图标钮（‹ › all）
+ * - 替换行默认收起（点 + 展开）
+ * - 底部选项行：+ / 匹配计数 / .* / Aa / \b
+ */
+let searchPanelObserver: MutationObserver | null = null;
+
+function customizeSearchPanel() {
+  const panel = document.querySelector('.cm-panel.cm-search') as HTMLElement | null;
+  if (!panel) return;
+
+  // 面板定位：贴 JSON 编辑器右上角（读取实际几何，避免视口公式漂移）
+  requestAnimationFrame(() => {
+    const panels = panel.closest('.cm-panels') as HTMLElement | null;
+    const editor = document.getElementById('editor-container');
+    if (!panels || !editor) return;
+    const er = editor.getBoundingClientRect();
+    panels.style.position = 'fixed';
+    panels.style.top = Math.round(er.top + 8) + 'px';
+    panels.style.bottom = 'auto'; /* CM 默认 bottom:0 会把容器拉伸到全高，面板被推到底部 */
+    // 先量面板宽再定位右缘
+    panels.style.left = '0px';
+    const pw = panels.getBoundingClientRect().width || 376;
+    const left = Math.max(0, Math.round(er.right - pw - 6));
+    panels.style.left = left + 'px';
+    panels.style.zIndex = '30';
+  });
+
+  // 导航钮改图标（不动 DOM 顺序，CM 受管节点移动会导致面板重建异常）
+  const nextBtn = panel.querySelector('button[name=next]');
+  const prevBtn = panel.querySelector('button[name=prev]');
+  const allBtn = panel.querySelector('button[name=all]');
+  const closeBtn = panel.querySelector('button[name=close]');
+  if (nextBtn) { nextBtn.textContent = '›'; nextBtn.setAttribute('title', '下一个 (Enter)'); }
+  if (prevBtn) { prevBtn.textContent = '‹'; prevBtn.setAttribute('title', '上一个 (Shift+Enter)'); }
+  if (allBtn) { allBtn.textContent = 'all'; allBtn.setAttribute('title', '选择全部匹配'); }
+  if (closeBtn) { closeBtn.textContent = '×'; closeBtn.classList.add('search-close-top'); }
+
+  // 替换行默认收起：把 replace 输入行包进可折叠容器
+  // CM 面板是扁平结构（replace input 的 parent 就是面板），必须逐个隐藏替换行元素
+  const replaceField = panel.querySelector('input[name=replace]') as HTMLElement | null;
+  const replaceBtns: HTMLElement[] = [...panel.querySelectorAll('button')].filter(b => /replace/i.test(b.textContent || ''));
+  const replaceEls: HTMLElement[] = [];
+  if (replaceField) {
+    // 替换行 = replace input + 其后所有 replace 按钮之间的兄弟节点
+    let node: Element | null = replaceField;
+    while (node) {
+      const el = node as HTMLElement;
+      replaceEls.push(el);
+      if (el.matches('button') && replaceBtns.includes(el as HTMLButtonElement) && replaceEls.length > 1) break;
+      node = el.nextElementSibling;
+    }
+    replaceEls.forEach(el => { el.style.display = 'none'; });
+  }
+
+  // 底部选项行：改造成原站样式（+ 展开替换 / 计数 / .* / Aa / \b）
+  const labels = [...panel.querySelectorAll('label')];
+  // labels: [case, regexp, words]（CM 默认顺序）
+  const optRow = document.createElement('div');
+  optRow.className = 'search-options-row';
+  const plusBtn = document.createElement('button');
+  plusBtn.className = 'search-opt-btn';
+  plusBtn.textContent = '+';
+  plusBtn.setAttribute('title', 'Toggle Replace');
+  plusBtn.addEventListener('click', () => {
+    if (!replaceEls.length) return;
+    const show = replaceEls[0].style.display === 'none';
+    replaceEls.forEach(el => { el.style.display = show ? '' : 'none'; });
+    plusBtn.textContent = show ? '+' : '−';
+  });
+  const counter = document.createElement('span');
+  counter.className = 'search-counter';
+  counter.textContent = '0 of 0';
+  optRow.appendChild(plusBtn);
+  optRow.appendChild(counter);
+  labels.forEach(l => {
+    const cb = l.querySelector('input[type=checkbox]') as HTMLInputElement | null;
+    const name = cb ? cb.name : '';
+    const btn = document.createElement('button');
+    btn.className = 'search-opt-btn';
+    if (name === 'case') { btn.textContent = 'Aa'; btn.title = '区分大小写'; }
+    else if (name === 're') { btn.textContent = '.*'; btn.title = '正则表达式'; }
+    else if (name === 'word') { btn.textContent = String.fromCharCode(92) + 'b'; btn.title = '全词匹配'; }
+    if (cb) {
+      // checkbox 藏进按钮，点击同步
+      l.style.display = 'none';
+      btn.addEventListener('click', () => {
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+        btn.classList.toggle('search-opt-active', cb.checked);
+      });
+    }
+    optRow.appendChild(btn);
+  });
+  panel.appendChild(optRow);
+
+  // 计数器：监听匹配高亮数量（只监听编辑器 content 的 class 属性变化 + 节流，避免滚动重绘风暴）
+  if (searchPanelObserver) searchPanelObserver.disconnect();
+  let counterPending = false;
+  const updateCounter = () => {
+    const current = document.querySelector('.cm-panel.cm-search');
+    if (!current) { searchPanelObserver!.disconnect(); searchPanelObserver = null; return; }
+    const total = document.querySelectorAll('#editor-container .cm-searchMatch').length;
+    const sel = document.querySelectorAll('#editor-container .cm-searchMatch-selected').length;
+    const c = current.querySelector('.search-counter');
+    if (c) c.textContent = sel + ' of ' + total;
+  };
+  searchPanelObserver = new MutationObserver(() => {
+    if (counterPending) return;
+    counterPending = true;
+    setTimeout(() => { counterPending = false; updateCounter(); }, 150);
+  });
+  searchPanelObserver.observe(document.getElementById('editor-container')!, { subtree: true, attributes: true, attributeFilter: ['class'], childList: false });
+}
+
 // ========== 主题切换 ==========
 function initTheme() {
   const saved = localStorage.getItem('jsongrid-theme');
@@ -839,6 +957,7 @@ function setupEventListeners() {
   // 搜索：打开 CodeMirror 内置搜索面板（原站 Search 按钮同款行为）
   document.getElementById('btn-search')?.addEventListener('click', () => {
     openSearchPanel(inputEditor);
+    customizeSearchPanel();
   });
 
    // 分隔条：‹ 右侧全屏 / › 左侧全屏；▶ 把左侧 JSON 格式化渲染到右侧 GRID
@@ -913,6 +1032,7 @@ function setupEventListeners() {
   // Grid 视图：搜索（同样打开编辑器搜索面板）
   document.getElementById('grid-btn-search')?.addEventListener('click', () => {
     openSearchPanel(inputEditor);
+    customizeSearchPanel();
   });
 
   // Grid 视图：导出 CSV（行号列 ⋮ 菜单暂未做，暂留键盘入口）

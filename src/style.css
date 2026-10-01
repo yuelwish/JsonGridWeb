@@ -657,15 +657,6 @@ body {
 }
 
 
-/* 搜索面板：原站 Ace 样式（贴编辑器右上角，#D4D4D4 底，左下圆角） */
-.cm-panels.cm-panels-bottom {
-  position: fixed;
-  top: 96px; /* 工具栏 48 + 面板标题条 40 + 间距 */
-  right: auto;
-  left: calc((100vw - 40px) * 0.3333 + 12px - 376px); /* 左面板右缘(1/3 处)内收，376px 面板右缘贴近编辑器右边界 */
-  z-index: 30;
-  bottom: auto;
-}
 
 .cm-panel.cm-search {
   background: #d4d4d4;
@@ -717,6 +708,86 @@ body {
 
 [data-theme="dark"] .cm-panel.cm-search button:hover {
   background: #666;
+}
+
+/* 搜索面板底部选项行（原站 ace_search_options：+/计数/正则/大小写/全词） */
+.search-options-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.search-opt-btn {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 5px;
+  background: #f0f0f0;
+  border: 1px solid #999;
+  border-radius: 3px;
+  color: #222;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.search-opt-btn:hover {
+  background: #fff;
+}
+
+.search-opt-btn.search-opt-active {
+  background: #0288d1;
+  border-color: #0288d1;
+  color: #fff;
+}
+
+.search-counter {
+  color: #555;
+  font-size: 12px;
+  margin: 0 4px;
+  min-width: 48px;
+}
+
+/* 关闭钮移到右上角（原站 ace_searchbtn_close） */
+.cm-panel.cm-search button.search-close-top {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+}
+
+.cm-panel.cm-search {
+  position: relative;
+}
+
+[data-theme="dark"] .cm-panel.cm-search button.search-close-top {
+  background: transparent;
+  color: #ccc;
+}
+
+[data-theme="dark"] .search-opt-btn {
+  background: #555;
+  border-color: #777;
+  color: #ccc;
+}
+
+[data-theme="dark"] .search-opt-btn:hover {
+  background: #666;
+}
+
+[data-theme="dark"] .search-opt-btn.search-opt-active {
+  background: #0288d1;
+  border-color: #0288d1;
+  color: #fff;
+}
+
+[data-theme="dark"] .search-counter {
+  color: #aaa;
 }
 
 /* Search highlight */
