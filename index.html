@@ -9,66 +9,68 @@
   <div id="app">
     <header class="toolbar">
       <div class="toolbar-left">
-        <h1>JSON Grid</h1>
+        <h1><span class="logo-json">JSON</span><span class="logo-grid">GRID</span></h1>
       </div>
       <div class="toolbar-right">
-        <input id="search-input" type="text" placeholder="搜索..." class="search-input">
+        <input id="search-input" type="text" placeholder="Search..." class="search-input">
+        <button id="btn-layout" class="tool-btn tool-btn-icon" title="切换左右分屏布局" aria-label="切换左右分屏布局"><svg width="15" height="13" viewBox="0 0 15 13" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="0.5" y="0.5" width="14" height="12" rx="1.5" stroke="currentColor"/><line x1="5.5" y1="0" x2="5.5" y2="13" stroke="currentColor"/></svg></button>
         <button id="btn-theme" class="theme-toggle" title="切换主题">🌙</button>
       </div>
     </header>
-    
-    <main class="content">
-      <div class="panel left-panel">
-        <div class="panel-header">
-          <span class="panel-title">输入 JSON</span>
-          <div class="panel-actions">
-            <button id="btn-format" class="action-btn">格式化</button>
-            <button id="btn-compress" class="action-btn">压缩</button>
-            <button id="btn-clear" class="action-btn">清空</button>
-            <button id="btn-fullscreen-left" class="action-btn" title="全屏/恢复">⛶</button>
+
+    <main class="editor-stage">
+      <!-- 左面板：JSON 编辑器 -->
+      <section id="panel-json" class="panel-json">
+        <div class="panel-strip">
+          <span class="panel-strip-title">JSON</span>
+          <div class="panel-strip-actions">
+            <button id="btn-sample" class="strip-btn" data-color="gray"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5L9.5 0H4zm5.5 1.5V4a1 1 0 0 0 1 1h2.5l-3.5-3.5z"/></svg><span>Sample</span></button>
+            <button id="btn-search" class="strip-btn" data-color="blue"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"/></svg><span>Search</span></button>
+            <button id="btn-format" class="strip-btn" data-color="purple"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" fill-rule="evenodd" d="M4 11.5v-8h9v8H4Zm-1 1V14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9.5Z"/></svg><span>Format</span></button>
+            <button id="btn-minify" class="strip-btn" data-color="lightblue"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2Zm4.5 5.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1Zm0 3h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1Zm0-6h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1Z"/></svg><span>Minify</span></button>
+            <button id="btn-validate" class="strip-btn" data-color="green"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm3.78-9.72a.751.751 0 0 1-.018 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018l-2.25-2.25a.751.751 0 1 1 1.042-1.042L7.5 10.19l3.72-3.72a.751.751 0 0 1 1.06.018Z"/></svg><span>Validate</span></button>
+            <button id="btn-clear" class="strip-btn" data-color="yellow"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H2.505a.25.25 0 0 0-.25.25v.75a.75.75 0 0 0 .75.75h.26l1.16 9.524A2.5 2.5 0 0 0 6.407 16h3.186a2.5 2.5 0 0 0 2.482-2.223L13.235 5.25h.26a.75.75 0 0 0 .75-.75v-.75a.25.25 0 0 0-.25-.25H11Z"/></svg><span>Clear</span></button>
           </div>
         </div>
-        <div id="editor-input" class="editor-container"></div>
+        <div id="editor-container" class="editor-container"></div>
+      </section>
+
+      <!-- 分隔条：深灰竖条，▶ 渲染按钮居中 + 底部 ‹ › 全屏切换（原站 separator 结构） -->
+      <div id="split-handle" class="separator">
+        <button id="btn-render-grid" class="separator-button" title="把左侧 JSON 渲染到右侧 GRID"><span class="sep-icon">▶</span></button>
+        <div class="separator-bottom">
+          <button class="separator-button sep-small" data-side="left" title="右侧全屏（隐藏左侧 JSON）"><span class="sep-icon">‹</span></button>
+          <button class="separator-button sep-small" data-side="right" title="左侧全屏（隐藏右侧 GRID）"><span class="sep-icon">›</span></button>
+        </div>
       </div>
-      
-      <div id="resizer" class="panel-resizer" title="拖拽调整面板宽度">
-        <button id="btn-collapse-left" class="resizer-btn" title="折叠左侧面板">‹</button>
-        <button id="btn-collapse-right" class="resizer-btn" title="折叠右侧面板">›</button>
-      </div>
-      
-      <div class="panel right-panel">
-        <div class="panel-header">
-          <div class="view-tabs">
-            <button class="tab-btn active" data-view="grid">Grid</button>
-            <button class="tab-btn" data-view="tree">树形</button>
-          </div>
-          <button id="btn-fullscreen-right" class="action-btn" title="全屏/恢复">⛶</button>
-        </div>
-        <div id="editor-output" class="editor-container" style="display: none;"></div>
-        <div id="grid-toolbar" class="grid-toolbar" style="display: none;">
-          <div class="grid-toolbar-group">
-            <button id="grid-btn-expand-all" class="grid-toolbar-btn" title="展开全部嵌套">展开全部</button>
-            <button id="grid-btn-collapse-all" class="grid-toolbar-btn" title="折叠全部嵌套">折叠全部</button>
-          </div>
-          <div class="grid-toolbar-group">
-            <input id="grid-filter-input" type="text" class="grid-filter-input" placeholder="过滤..." title="输入关键词过滤行">
-          </div>
-          <div class="grid-toolbar-group">
-            <button id="grid-btn-export-csv" class="grid-toolbar-btn" title="导出当前数据为 CSV">导出 CSV</button>
+
+      <!-- 右面板：GRID -->
+      <section id="panel-grid" class="panel-grid">
+        <div class="panel-strip">
+          <span class="panel-strip-title">GRID</span>
+          <div class="panel-strip-actions">
+            <button id="grid-btn-filter" class="strip-btn" data-color="green"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M1.5 1.5A.5.5 0 0 0 1 2v4.8a2 2 0 0 0 .6 1.4l3.4 3.45V15a.5.5 0 0 0 1 0v-3.4l3.4-3.45A2 2 0 0 0 10 6.8V2a.5.5 0 0 0-.5-.5h-8Z"/></svg><span>Advanced Filter</span></button>
+            <button id="grid-btn-search" class="strip-btn" data-color="blue"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"/></svg><span>Search</span></button>
+            <button id="grid-btn-expand-all" class="strip-btn" data-color="lightblue"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM7.5 4.5v3h-3a.5.5 0 0 0 0 1h3v3a.5.5 0 0 0 1 0v-3h3a.5.5 0 0 0 0-1h-3v-3a.5.5 0 0 0-1 0Z"/></svg><span>Expand All</span></button>
+            <button id="grid-btn-collapse-all" class="strip-btn" data-color="lightblue"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM4.5 7.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1Z"/></svg><span>Collapse All</span></button>
+            <button id="grid-btn-export-csv" class="strip-btn" data-color="purple"><svg viewBox="0 0 16 16" class="bi"><path fill="currentColor" d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5L9.5 0H4zm8 5.5V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5L12 5.5Z"/></svg><span>Export CSV</span></button>
           </div>
         </div>
-        <div id="grid-view" class="grid-container"></div>
+        <div id="grid-stage" class="grid-stage">
+          <div id="grid-view" class="grid-container"></div>
+        </div>
+        <!-- 树形视图（当前版本隐藏；GRID 为唯一数据视图） -->
         <div id="tree-view" class="tree-container" style="display: none;"></div>
-      </div>
+      </section>
     </main>
-    
+
     <footer class="status-bar">
       <span id="left-stats">输入: 0 字符 | 0 行</span>
       <span id="status-message">就绪</span>
-      <span id="right-stats">输出: 0 字符 | 0 行</span>
+      <span id="right-stats"></span>
     </footer>
   </div>
-  
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

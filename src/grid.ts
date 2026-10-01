@@ -229,7 +229,16 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
       }
     }
 
-    if (shouldNav || shouldToggle) rerender();
+    // 双击的第一下 click：跳过导航重绘，避免 innerHTML 重建导致双击闪烁；
+    // 展开折叠 toggle 不受影响（第二击落在同元素，dblclick 处理编辑）
+    if (e.detail >= 2) return;
+
+    if (shouldNav && !shouldToggle) {
+      // 仅选中态变化：增量更新高亮 class，不重建 DOM（重建会闪）
+      updateNavHighlight(state, rowsEl);
+    } else if (shouldNav || shouldToggle) {
+      rerender();
+    }
   });
   // 表头点击排序
   headerEl.addEventListener('click', (e) => {
@@ -256,6 +265,17 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
   // 双击编辑单元格
   rowsEl.addEventListener('dblclick', (e) => {
     const target = e.target as HTMLElement;
+    // 嵌套表内叶子值（仅 td.ov 值单元格；td.op 是键名，不允许按值编辑）
+    const nestedLeaf = target.closest('.nested-grid-table td.ov') as HTMLElement | null;
+    if (nestedLeaf) {
+      // 值格内可能嵌套更深的展开单元格（td.ov > .cell-expandable），排除
+      if (nestedLeaf.querySelector('.cell-expandable, .nested-grid-table')) return;
+      const pathAttr = nestedLeaf.getAttribute('data-json-path');
+      if (pathAttr != null) {
+        startNestedEditing(nestedLeaf, pathAttr);
+      }
+      return;
+    }
     const cell = target.closest('.grid-cell') as HTMLElement | null;
     if (!cell) return;
     // 可展开单元格不编辑
@@ -295,28 +315,58 @@ function buildHeader(headers: string[], state: GridState): HTMLElement {
       cell.style.flex = '0 0 ' + state.colWidths[hIdx] + 'px';
     }
 
+    if (h === '#') {
+      // 索引列表头：⋯ 搜索按钮（原站 pi-ellipsis-h）
+      const dots = document.createElement('span');
+      dots.className = 'header-dots-btn';
+      dots.textContent = '⋯';
+      dots.title = '搜索';
+      cell.appendChild(dots);
+      headerEl.appendChild(cell);
+      continue;
+    }
+
+    // ☰ 拖拽柄（原站 drag-handle，可拖动调整列宽）
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'header-drag-handle';
+    dragHandle.textContent = '☰ ';
+    dragHandle.title = 'Drag & Drop to move column';
+    cell.appendChild(dragHandle);
+
     const nameSpan = document.createElement('span');
+    nameSpan.className = 'header-title';
     nameSpan.textContent = h;
     nameSpan.style.flex = '1';
     nameSpan.style.overflow = 'hidden';
     nameSpan.style.textOverflow = 'ellipsis';
-    nameSpan.style.textAlign = h === '#' ? 'center' : 'left';
     cell.appendChild(nameSpan);
 
-    // 排序指示器
+    // 排序指示器（原站 ↑↓ 图标）
     if (hIdx > 0) {
       const sortIndicator = document.createElement('span');
       sortIndicator.className = 'header-sort-icon';
       if (state.sortColumn === hIdx) {
-        sortIndicator.textContent = state.sortDirection === 'asc' ? '\u25B2' : '\u25BC';
+        sortIndicator.textContent = state.sortDirection === 'asc' ? '▲' : '▼';
         sortIndicator.style.opacity = '1';
         sortIndicator.style.color = 'var(--primary-color)';
       } else {
-        sortIndicator.textContent = '\u2195';
-        sortIndicator.style.opacity = '0.3';
+        sortIndicator.textContent = '⇅';
+        sortIndicator.style.opacity = '0.45';
       }
-      sortIndicator.style.marginLeft = '4px';
       cell.appendChild(sortIndicator);
+
+      // 筛选图标（原站 pi-filter）
+      const filterIcon = document.createElement('span');
+      filterIcon.className = 'header-filter-icon';
+      filterIcon.textContent = '⏳';
+      filterIcon.title = 'Filter';
+      cell.appendChild(filterIcon);
+
+      // 列宽拖拽柄（⋮ 右缘）
+      const colResize = document.createElement('span');
+      colResize.className = 'header-col-resize';
+      colResize.title = '拖动调整列宽';
+      cell.appendChild(colResize);
     }
 
     headerEl.appendChild(cell);
@@ -582,7 +632,8 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
     const idxW = state.colWidths[0] || 56;
     parts.push('<div class="grid-cell grid-index-cell' + navSelectedClass(state, rowPath, 'value') + '" style="flex:0 0 ' + idxW + 'px"'
       + ' data-json-path="' + escHtml(rowPath) + '" data-nav-target="value">'
-      + (actualIdx + 1) + '</div>');
+      + '<span class="row-three-dot">⋮</span>'
+      + '<span class="row-index-num">' + (actualIdx + 1) + '</span></div>');
     const item = row as Record<string, unknown>;
     for (let h = 1; h < headers.length; h++) {
       const field = headers[h];
@@ -808,6 +859,34 @@ function navSelectedClass(
   return '';
 }
 
+/** 选中态变化时增量切换 grid-nav-selected，避免全量重绘闪烁 */
+function updateNavHighlight(state: GridState, root: HTMLElement): void {
+  const sel = state.selectedNav;
+  root.querySelectorAll('.grid-nav-selected').forEach(el => {
+    const path = el.getAttribute('data-json-path');
+    const target = (el.getAttribute('data-nav-target') || 'value') as 'key' | 'value';
+    if (!sel || path !== sel.path || target !== sel.target) {
+      el.classList.remove('grid-nav-selected');
+    }
+  });
+  if (sel) {
+    const next = root.querySelector('[data-json-path="' + cssEscapeAttr(sel.path) + '"][data-nav-target="' + sel.target + '"]');
+    if (next && !next.classList.contains('grid-nav-selected')) {
+      next.classList.add('grid-nav-selected');
+    }
+  }
+}
+
+/** 属性选择器值转义（引号与反斜杠） */
+function cssEscapeAttr(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/** 导出：pathKey 解码为路径段（供嵌套编辑回写用） */
+export function decodePathKey(pathKey: string): string[] {
+  return decodePathSegments(pathKey);
+}
+
 function dispatchGridNavigate(pathKey: string, target: 'key' | 'value'): void {
   // 保留空字符串段：合法 JSON 键 "" 不能被 filter 掉
   const segments = decodePathSegments(pathKey);
@@ -819,7 +898,8 @@ function dispatchGridNavigate(pathKey: string, target: 'key' | 'value'): void {
 function escHtml(text: string): string {
   const d = document.createElement('div');
   d.textContent = text;
-  return d.innerHTML;
+  // textContent→innerHTML 不转义双引号，属性值场景（data-json-path 等）会被截断，补齐
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 
 function formatCell(val: unknown): { display: string; typeClass: string } {
@@ -1200,6 +1280,74 @@ function cancelEditing(): void {
   if (!currentEdit) return;
   currentEdit.input.remove();
   currentEdit = null;
+}
+
+/** 嵌套表内叶子值编辑：完成后按 data-json-path 全路径更新 */
+let currentNestedEdit: { input: HTMLInputElement; cell: HTMLElement; pathKey: string; oldValue: unknown } | null = null;
+
+function startNestedEditing(cell: HTMLElement, pathKey: string): void {
+  if (currentNestedEdit) currentNestedEdit.input.remove();
+  if (currentEdit) cancelEditing();
+
+  // 显示文本（截断后的展示值）；原始带类型值从 currentGridState 按 path 解出
+  const displayOld = (cell.textContent || '').trim();
+  const segments = decodePathSegments(pathKey);
+  const rawValue = resolvePathValue(currentGridState ? currentGridState.rows : null, segments);
+  const input = document.createElement('input');
+  input.className = 'grid-cell-editor';
+  input.value = displayOld;
+
+  const rect = cell.getBoundingClientRect();
+  input.style.position = 'fixed';
+  input.style.left = rect.left + 'px';
+  input.style.top = rect.top + 'px';
+  input.style.width = Math.max(rect.width, 80) + 'px';
+  input.style.height = rect.height + 'px';
+  input.style.zIndex = '1000';
+
+  document.body.appendChild(input);
+  input.focus();
+  input.select();
+
+  currentNestedEdit = { input, cell, pathKey, oldValue: rawValue };
+
+  input.addEventListener('blur', finishNestedEditing);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', finishNestedEditing); input.remove(); currentNestedEdit = null; }
+  });
+}
+
+/** 按 decodePathSegments 产生的段数组在 rows 树中取原始值（数组段为数字下标） */
+function resolvePathValue(rows: unknown[] | null, segments: string[]): unknown {
+  if (!rows || segments.length === 0) return undefined;
+  // segments[0] 是顶层数组下标，其后才是键/下标交替
+  let current: unknown = rows;
+  for (const seg of segments) {
+    if (current === null || current === undefined) return undefined;
+    if (Array.isArray(current)) {
+      const idx = Number(seg);
+      if (isNaN(idx)) return undefined;
+      current = current[idx];
+    } else if (typeof current === 'object') {
+      current = (current as Record<string, unknown>)[seg];
+    } else {
+      return undefined;
+    }
+  }
+  return current;
+}
+
+function finishNestedEditing(): void {
+  if (!currentNestedEdit) return;
+  const { input, pathKey, oldValue } = currentNestedEdit;
+  const newValue = input.value;
+  input.remove();
+  currentNestedEdit = null;
+  if (newValue === String(oldValue)) return;
+  window.dispatchEvent(new CustomEvent('grid-nested-edit', {
+    detail: { pathKey, newValue, oldValue }
+  }));
 }
 
 function findCell(rowsEl: HTMLElement, rowIdx: number, colIdx: number): HTMLElement | null {

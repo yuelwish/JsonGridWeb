@@ -3,8 +3,10 @@ import { EditorView, basicSetup } from 'codemirror';
 import { Decoration, ViewPlugin } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
-import { renderTree } from './tree';
-import { renderVirtualGrid, expandAll, collapseAll, exportToCSV, setFilterText, getFilteredCount, getTotalCount, getCellPath, onCellUpdated } from './grid';
+import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
+import { tags as t } from '@lezer/highlight';
+import { renderVirtualGrid, expandAll, collapseAll, exportToCSV, setFilterText, getFilteredCount, getTotalCount, getCellPath, onCellUpdated, decodePathKey } from './grid';
+import { SAMPLE_JSON } from './sample-data';
 
 // ========== Worker 管理 ==========
 let worker: Worker;
@@ -22,33 +24,37 @@ function initWorker() {
     if (cb) {
       pendingRequests.delete(id);
       if (success) cb.resolve(result);
-      else cb.reject(new ErrorWithPosition(error));
+      else cb.reject(new ErrorWithPosition(error, workerLastPayload));
     }
   };
 }
 
-// 错误类，包含位置信息
-class ErrorWithPosition extends Error {
-  line?: number;
-  col?: number;
+// 错误类，携带输入文本，用于把原文档偏移换算成行列
+ class ErrorWithPosition extends Error {
+   line?: number;
+   col?: number;
   
-  constructor(message: string) {
+  constructor(message: string, docText?: string) {
     super(message);
     this.name = 'ErrorWithPosition';
-    
-    // 解析错误消息中的位置信息
+
     const match = message.match(/position (\d+)/);
-    if (match) {
-      const pos = Number(match[1]);
-      // 简单计算行号和列号
-      const lines = message.substring(0, pos).split('\n');
-      this.line = lines.length;
-      this.col = lines.length > 0 ? lines[lines.length - 1].length : 0;
-    }
+    if (!match) return;
+    const pos = Number(match[1]);
+    // 偏移是相对原始输入文档的，必须基于输入文本计算行列
+    const base = docText !== undefined ? docText.substring(0, pos) : '';
+    const lines = base.split('\n');
+    this.line = lines.length;
+    this.col = lines.length > 0 ? lines[lines.length - 1].length : 0;
   }
 }
 
+let workerLastPayload: string = '';
+
 function workerRequest(type: string, payload: any): Promise<any> {
+  // 记录最近一次请求的原始文本，错误回包时可换算行列（JSON 字符串载荷则记录其 jsonString）
+  if (typeof payload === 'string') workerLastPayload = payload;
+  else if (payload && typeof payload.jsonString === 'string') workerLastPayload = payload.jsonString;
   return new Promise((resolve, reject) => {
     const id = messageId++;
     pendingRequests.set(id, { resolve, reject });
@@ -108,10 +114,10 @@ function getWorkerCode(): string {
           // 简单位置检测：查找 "character" 或 "position" 关键字
           var msg = e.message;
           if (msg.includes('character')) {
-            var charMatch = msg.match(/character\s+(\d+)/i);
+            var charMatch = msg.match(/character\\s+(\\d+)/i);
             if (charMatch) pos = Number(charMatch[1]);
           } else if (msg.includes('position')) {
-            var posMatch = msg.match(/position\s+(\d+)/i);
+            var posMatch = msg.match(/position\\s+(\\d+)/i);
             if (posMatch) pos = Number(posMatch[1]);
           }
           // 计算行号和列号
@@ -488,12 +494,27 @@ function getWorkerCode(): string {
 
 // ========== 编辑器 ==========
 let inputEditor: EditorView;
-let outputEditor: EditorView;
 let searchDecorations: DecorationSet = Decoration.none;
 let navDecorations: DecorationSet = Decoration.none;
+let errorClearTimer: number | undefined;
+let errorDecorations: DecorationSet = Decoration.none;
 let navClearTimer: number | undefined;
 /** Grid 导航请求世代号：丢弃乱序/过期的 locatePath 响应 */
 let navGen = 0;
+
+/** 原站 Ace 主题色（class 方式，随暗色主题切换）：
+ *  亮色：键 #234A97 / 字符串 #0B6125 / 数字·常量 #811F24 / 标点·括号 #080808
+ *  暗色（idle-fingers）：键·标点 #FFF / 字符串 #A5C261 / 数字·常量 #6C99BB */
+const originalSiteHighlight = HighlightStyle.define([
+  { tag: t.propertyName, class: 'tok-key' },
+  { tag: t.string, class: 'tok-string' },
+  { tag: t.number, class: 'tok-number' },
+  { tag: t.bool, class: 'tok-number' },
+  { tag: t.null, class: 'tok-number' },
+  { tag: t.punctuation, class: 'tok-punct' },
+  { tag: t.bracket, class: 'tok-punct' },
+  { tag: t.separator, class: 'tok-punct' },
+]);
 
 function initEditors() {
   // ponytail: search/nav highlight 用 ViewPlugin 管理，避免手动清理
@@ -518,6 +539,16 @@ function initEditors() {
     }
   }), { decorations: v => v.decorations });
 
+  const errorHighlight = ViewPlugin.define(() => ({
+    decorations: errorDecorations,
+    update(update: ViewUpdate) {
+      if (update.docChanged) {
+        errorDecorations = Decoration.none;
+      }
+      this.decorations = errorDecorations;
+    }
+  }), { decorations: v => v.decorations });
+
   let autoFormatTimer: number;
 
   inputEditor = new EditorView({
@@ -525,8 +556,10 @@ function initEditors() {
     extensions: [
       basicSetup,
       json(),
+      syntaxHighlighting(originalSiteHighlight),
       searchHighlight,
       navHighlight,
+      errorHighlight,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           // 文档变更使进行中的导航失效，并清高亮
@@ -538,7 +571,7 @@ function initEditors() {
           navDecorations = Decoration.none;
         }
         if (update.docChanged && !autoFormatting) {
-          updateStats('input');
+          updateStats();
           // debounce 500ms 自动格式化
           clearTimeout(autoFormatTimer);
           autoFormatTimer = window.setTimeout(() => {
@@ -547,22 +580,14 @@ function initEditors() {
         }
       })
     ],
-    parent: document.getElementById('editor-input')!
-  });
-
-  outputEditor = new EditorView({
-    doc: '',
-    extensions: [basicSetup, json(), searchHighlight],
-    parent: document.getElementById('editor-output')!
+    parent: document.getElementById('editor-container')!
   });
 }
 
-function updateStats(side: 'input' | 'output') {
-  const editor = side === 'input' ? inputEditor : outputEditor;
-  const content = editor.state.doc.toString();
-  const text = `${content.length} 字符 | ${content.split('\n').length} 行`;
-  const el = document.getElementById(side === 'input' ? 'left-stats' : 'right-stats');
-  if (el) el.textContent = (side === 'input' ? '输入: ' : '输出: ') + text;
+function updateStats() {
+  const content = inputEditor.state.doc.toString();
+  const el = document.getElementById('left-stats');
+  if (el) el.textContent = `输入: ${content.length} 字符 | ${content.split('\n').length} 行`;
 }
 
 /**
@@ -580,17 +605,23 @@ async function autoFormat() {
     const formatted = result.result;
     // 如果已经格式化过（内容相同），跳过
     if (formatted === input) {
-      if (currentView === 'grid') renderGridView();
+      if (layoutMode !== 'json-full') renderGridView();
       return;
     }
     autoFormatting = true;
     inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: formatted } });
-    updateStats('input');
+    updateStats();
     autoFormatting = false;
-    if (currentView === 'grid') renderGridView();
+    if (layoutMode !== 'json-full') renderGridView();
   } catch {
     // 无效 JSON，不更新
   }
+}
+
+/** 耗时显示：<0.01ms 时保留有效位，避免 0.00ms 假象 */
+function fmtMs(ms: number): string {
+  if (ms < 0.01) return '<0.01';
+  return ms.toFixed(2);
 }
 
 function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
@@ -609,7 +640,6 @@ function highlightSearchMatches(matches: Array<{ match: string }>) {
   if (!query) {
     searchDecorations = Decoration.none;
     inputEditor.dispatch({});
-    outputEditor.dispatch({});
     return;
   }
 
@@ -634,7 +664,6 @@ function highlightSearchMatches(matches: Array<{ match: string }>) {
 
   searchDecorations = Decoration.set(decorations.sort((a: any, b: any) => a.from - b.from));
   inputEditor.dispatch({});
-  outputEditor.dispatch({});
 }
 
 // ========== 主题切换 ==========
@@ -673,7 +702,7 @@ function initURLParams() {
       inputEditor.dispatch({
         changes: { from: 0, to: inputEditor.state.doc.length, insert: decoded }
       });
-      updateStats('input');
+      updateStats();
       setStatus('已从 URL 加载 JSON', 'success');
     } catch (err) {
       setStatus('URL 参数解析失败', 'error');
@@ -693,40 +722,54 @@ function initURLParams() {
         inputEditor.dispatch({
           changes: { from: 0, to: inputEditor.state.doc.length, insert: text }
         });
-        updateStats('input');
+        updateStats();
         setStatus('已从远程 URL 加载', 'success');
       })
       .catch(err => setStatus('URL 加载失败: ' + err.message, 'error'));
   }
 }
 
-// ========== 视图切换 ==========
-let currentView: 'grid' | 'tree' = 'grid';
+// ========== 视图切换与布局 ==========
+/** 布局三态：split = 左右同显；json-full = 左侧 JSON 全屏；grid-full = 右侧 GRID 全屏 */
+type LayoutMode = 'split' | 'json-full' | 'grid-full';
+let layoutMode: LayoutMode = 'split';
 
-function switchView(view: 'grid' | 'tree') {
-  currentView = view;
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-view') === view);
-  });
+function applyLayout() {
+  const stage = document.querySelector('.editor-stage') as HTMLElement;
+  const panelJson = document.getElementById('panel-json')!;
+  const panelGrid = document.getElementById('panel-grid')!;
+  const splitHandle = document.getElementById('split-handle')!;
+  const gridStage = document.getElementById('grid-stage')!;
+  const renderBtn = document.getElementById('btn-render-grid')!;
 
-  const editorOutput = document.getElementById('editor-output')!;
-  const gridView = document.getElementById('grid-view')!;
-  const treeView = document.getElementById('tree-view')!;
-  const gridToolbar = document.getElementById('grid-toolbar')!;
+  stage.classList.toggle('split', layoutMode === 'split');
+  stage.classList.toggle('json-full', layoutMode === 'json-full');
+  stage.classList.toggle('grid-full', layoutMode === 'grid-full');
 
-  editorOutput.style.display = 'none';
-  gridView.style.display = 'none';
-  treeView.style.display = 'none';
-  gridToolbar.style.display = 'none';
-
-  if (view === 'grid') {
-    gridView.style.display = 'block';
-    gridToolbar.style.display = 'flex';
+  if (layoutMode === 'split') {
+    panelJson.style.display = 'flex';
+    panelGrid.style.display = 'flex';
+    splitHandle.style.display = 'flex';
+    renderBtn.style.display = 'flex';
+    gridStage.style.display = 'flex';
     renderGridView();
-  } else if (view === 'tree') {
-    treeView.style.display = 'block';
-    renderTreeView();
+  } else {
+    // 全屏态：隐藏另一侧；分隔条只留底部返回钮，▶ 隐藏
+    splitHandle.style.display = 'flex';
+    renderBtn.style.display = 'none';
+    const jsonFull = layoutMode === 'json-full';
+    panelJson.style.display = jsonFull ? 'flex' : 'none';
+    panelGrid.style.display = jsonFull ? 'none' : 'flex';
+    gridStage.style.display = jsonFull ? 'none' : 'flex';
+    if (!jsonFull) renderGridView();
   }
+
+  localStorage.setItem('jsongrid-layout', layoutMode);
+}
+
+function setLayout(mode: LayoutMode) {
+  layoutMode = mode;
+  applyLayout();
 }
 
 async function renderGridView() {
@@ -747,23 +790,6 @@ async function renderGridView() {
    }
  }
  
- async function renderTreeView() {
-   const input = inputEditor.state.doc.toString();
-   if (!input.trim()) {
-     document.getElementById('tree-view')!.innerHTML = '<p style="color: var(--text-muted);">请输入 JSON 数据</p>';
-     return;
-   }
-   try {
-     const result = await workerRequest('parse', input);
-     renderTree(result.data, document.getElementById('tree-view')!);
-   } catch (err: any) {
-     document.getElementById('tree-view')!.innerHTML = `<p style="color: var(--error-color);">解析失败: ${err.message}</p>`;
-     // 如果有位置信息，定位到错误位置
-     if (err.line && err.col) {
-       highlightError(err.line, err.col);
-     }
-   }
- }
 
 // ========== 事件绑定 ==========
 function setupEventListeners() {
@@ -775,15 +801,16 @@ function setupEventListeners() {
       const result = await workerRequest('format', input);
       autoFormatting = true;
       inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
-      updateStats('input');
+      updateStats();
       autoFormatting = false;
-      setStatus(`格式化完成 (${result.processTime.toFixed(2)}ms)`, 'success');
+      setStatus(`格式化完成 (${fmtMs(result.processTime)}ms)`, 'success');
     } catch (err: any) {
       setStatus(`格式化失败: ${err.message}`, 'error');
+      if (err.line) highlightError(err.line, err.col || 0);
     }
   });
 
-  document.getElementById('btn-compress')?.addEventListener('click', async () => {
+  document.getElementById('btn-minify')?.addEventListener('click', async () => {
     const input = inputEditor.state.doc.toString();
     if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
     try {
@@ -791,21 +818,54 @@ function setupEventListeners() {
       const result = await workerRequest('compress', input);
       autoFormatting = true;
       inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
-      updateStats('input');
+      updateStats();
       autoFormatting = false;
       setStatus(`压缩完成，节省 ${(result.saved / 1024).toFixed(2)} KB`, 'success');
     } catch (err: any) {
       setStatus(`压缩失败: ${err.message}`, 'error');
+      if (err.line) highlightError(err.line, err.col || 0);
+    }
+  });
+
+  // Sample：加载原站样例并格式化
+  document.getElementById('btn-sample')?.addEventListener('click', async () => {
+    try {
+      setStatus('加载样例...');
+      const result = await workerRequest('format', SAMPLE_JSON);
+      autoFormatting = true;
+      inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
+      updateStats();
+      autoFormatting = false;
+      setStatus(`样例已加载 (${(result.processTime || 0).toFixed(3)}ms)`, 'success');
+      if (layoutMode !== 'json-full') renderGridView();
+    } catch (err: any) {
+      setStatus(`样例加载失败: ${err.message}`, 'error');
+    }
+  });
+
+  // Validate：校验 JSON，成功/失败都给出位置反馈
+  document.getElementById('btn-validate')?.addEventListener('click', async () => {
+    const input = inputEditor.state.doc.toString();
+    if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
+    try {
+      setStatus('校验中...');
+      const result = await workerRequest('validate', input);
+      if (result.valid) {
+        setStatus(`JSON 有效 (${fmtMs(result.validateTime)}ms)`, 'success');
+      } else {
+        setStatus(`JSON 无效: ${result.error}（第 ${result.line} 行，第 ${(result.col || 0) + 1} 列）`, 'error');
+        highlightError(result.line, result.col || 0);
+      }
+    } catch (err: any) {
+      setStatus(`校验失败: ${err.message}`, 'error');
     }
   });
 
   document.getElementById('btn-clear')?.addEventListener('click', () => {
     inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: '' } });
-    outputEditor.dispatch({ changes: { from: 0, to: outputEditor.state.doc.length, insert: '' } });
     searchDecorations = Decoration.none;
     inputEditor.dispatch({});
-    updateStats('input');
-    updateStats('output');
+    updateStats();
     setStatus('已清空');
   });
 
@@ -818,7 +878,6 @@ function setupEventListeners() {
     if (!query.trim()) {
       searchDecorations = Decoration.none;
       inputEditor.dispatch({});
-      outputEditor.dispatch({});
       setStatus('就绪');
       return;
     }
@@ -829,19 +888,45 @@ function setupEventListeners() {
         setStatus('搜索中...');
         const result = await workerRequest('search', { jsonString: input, query });
         highlightSearchMatches(result.results);
-        setStatus(`找到 ${result.total} 个匹配 (${result.searchTime.toFixed(2)}ms)`, 'success');
+        setStatus(`找到 ${result.total} 个匹配 (${fmtMs(result.searchTime)}ms)`, 'success');
       } catch (err: any) {
         setStatus(`搜索失败: ${err.message}`, 'error');
       }
     }, 300);
   });
 
-   // 视图切换
-   document.querySelectorAll('.tab-btn').forEach(btn => {
-     btn.addEventListener('click', (e) => {
-       const view = (e.target as HTMLElement).dataset.view as 'grid' | 'tree';
-       if (view) switchView(view);
-     });
+   // 分隔条：‹ 右侧全屏 / › 左侧全屏；▶ 把左侧 JSON 格式化渲染到右侧 GRID
+   document.querySelector('#split-handle [data-side="left"]')?.addEventListener('click', () => {
+     setLayout(layoutMode === 'grid-full' ? 'split' : 'grid-full');
+   });
+   document.querySelector('#split-handle [data-side="right"]')?.addEventListener('click', () => {
+     setLayout(layoutMode === 'json-full' ? 'split' : 'json-full');
+   });
+   document.getElementById('btn-render-grid')?.addEventListener('click', async () => {
+     const input = inputEditor.state.doc.toString();
+     if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
+     try {
+       setStatus('渲染中...');
+       const result = await workerRequest('format', input);
+       if (result.result !== input) {
+         autoFormatting = true;
+         inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
+         updateStats();
+         autoFormatting = false;
+       }
+       renderGridView();
+       setStatus(`已渲染到 GRID (${fmtMs(result.processTime)}ms)`, 'success');
+     } catch (err: any) {
+       setStatus(`渲染失败: ${err.message}`, 'error');
+       if (err.line) highlightError(err.line, err.col || 0);
+     }
+   });
+
+   // 布局切换按钮：三态循环 分屏 → GRID 全屏 → JSON 全屏
+   document.getElementById('btn-layout')?.addEventListener('click', () => {
+     const next: LayoutMode = layoutMode === 'split' ? 'grid-full' : layoutMode === 'grid-full' ? 'json-full' : 'split';
+     setLayout(next);
+     setStatus(next === 'split' ? '左右分屏' : next === 'grid-full' ? 'GRID 全屏' : 'JSON 全屏', 'info');
    });
 
    // Grid 视图：展开全部 / 折叠全部
@@ -852,28 +937,83 @@ function setupEventListeners() {
     collapseAll();
   });
 
-  // Grid 视图：过滤
+  // Grid 视图：过滤（Advanced Filter 弹出输入框）
   let filterTimer: number;
-  document.getElementById('grid-filter-input')?.addEventListener('input', (e) => {
-    clearTimeout(filterTimer);
-    const query = (e.target as HTMLInputElement).value;
-    filterTimer = window.setTimeout(() => {
-      setFilterText(query);
-      // 更新状态栏显示过滤结果
-      const total = getTotalCount();
-      const filtered = getFilteredCount();
-      if (query) {
-        setStatus(`过滤: ${filtered} / ${total} 行`, 'info');
-      } else {
-        setStatus('就绪');
-      }
-    }, 200);
+  document.getElementById('grid-btn-filter')?.addEventListener('click', () => {
+    const existing = document.getElementById('grid-filter-popover');
+    if (existing) { existing.remove(); return; }
+    const pop = document.createElement('div');
+    pop.id = 'grid-filter-popover';
+    pop.innerHTML = '<input id="grid-filter-input" type="text" class="grid-filter-input" placeholder="输入关键词过滤行...">';
+    document.getElementById('panel-grid')!.appendChild(pop);
+    const input = pop.querySelector('input')!;
+    input.focus();
+    input.addEventListener('input', (e) => {
+      clearTimeout(filterTimer);
+      const query = (e.target as HTMLInputElement).value;
+      filterTimer = window.setTimeout(() => {
+        setFilterText(query);
+        const total = getTotalCount();
+        const filtered = getFilteredCount();
+        if (query) {
+          setStatus(`过滤: ${filtered} / ${total} 行`, 'info');
+        } else {
+          setStatus('就绪');
+        }
+      }, 200);
+    });
   });
 
-  // Grid 视图：导出 CSV
+  // Grid 视图：搜索（复用顶部搜索框聚焦）
+  document.getElementById('grid-btn-search')?.addEventListener('click', () => {
+    const si = document.getElementById('search-input') as HTMLInputElement;
+    si.focus();
+    si.select();
+    setStatus('在顶部搜索框输入关键词', 'info');
+  });
+
+  // Grid 视图：导出 CSV（行号列 ⋮ 菜单暂未做，暂留键盘入口）
   document.getElementById('grid-btn-export-csv')?.addEventListener('click', () => {
     exportToCSV();
     setStatus('CSV 已导出', 'success');
+  });
+
+  // Grid 嵌套表内值编辑：按完整路径更新
+  window.addEventListener('grid-nested-edit', async (e: any) => {
+    const { pathKey, newValue, oldValue } = e.detail as { pathKey: string; newValue: string; oldValue: unknown };
+    const segments = decodePathKey(pathKey);
+    if (!segments.length) return;
+    // 类型保真：按原值类型解析，避免数字/布尔被写字符串
+    let parsedValue: unknown = newValue;
+    if (typeof oldValue === 'number') {
+      const n = Number(newValue);
+      if (isNaN(n)) { setStatus('数字格式无效，未更新', 'error'); return; }
+      parsedValue = n;
+    } else if (typeof oldValue === 'boolean') {
+      const lower = newValue.toLowerCase();
+      if (lower !== 'true' && lower !== 'false') { setStatus('布尔值需为 true/false，未更新', 'error'); return; }
+      parsedValue = lower === 'true';
+    } else if (oldValue === null) {
+      parsedValue = newValue === 'null' ? null : newValue;
+    }
+    try {
+      setStatus('更新中...');
+      const input = inputEditor.state.doc.toString();
+      const parseResult = await workerRequest('parse', input);
+      const updateResult = await workerRequest('updateCell', {
+        data: parseResult.data,
+        path: segments,
+        value: parsedValue
+      });
+      autoFormatting = true;
+      inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: updateResult.jsonString } });
+      updateStats();
+      autoFormatting = false;
+      renderGridView();
+      setStatus(`已更新 (${fmtMs(updateResult.updateTime)}ms)`, 'success');
+    } catch (err: any) {
+      setStatus(`更新失败: ${err.message}`, 'error');
+    }
   });
 
   // Grid 视图：单元格编辑
@@ -898,11 +1038,11 @@ function setupEventListeners() {
       inputEditor.dispatch({
         changes: { from: 0, to: inputEditor.state.doc.length, insert: updateResult.jsonString }
       });
-      updateStats('input');
+      updateStats();
       autoFormatting = false;
       // 更新 Grid
       onCellUpdated(updateResult.data);
-      setStatus(`已更新 (${updateResult.updateTime.toFixed(2)}ms)`, 'success');
+      setStatus(`已更新 (${fmtMs(updateResult.updateTime)}ms)`, 'success');
     } catch (err: any) {
       setStatus(`更新失败: ${err.message}`, 'error');
     }
@@ -970,161 +1110,85 @@ function init() {
   initEditors();
   initTheme();
   setupEventListeners();
-   updateStats('input');
-  updateStats('output');
+   updateStats();
+  updateStats();
   setStatus('就绪');
-  // 默认显示 Grid 视图
-  switchView('grid');
-   // 初始化拖拽条
-   initPanelResizer();
+  // 恢复上次的布局（默认：左右分屏）
+  const savedLayout = localStorage.getItem('jsongrid-layout') as LayoutMode | null;
+  layoutMode = savedLayout === 'json-full' || savedLayout === 'grid-full' ? savedLayout : 'split';
+  applyLayout();
+   // 分栏拖拽
+   initSplitDrag();
    // URL 参数最后处理（可能覆盖编辑器内容）
    initURLParams();
 }
 
-// ========== 拖拽条 ==========
-function initPanelResizer() {
-  const resizer = document.getElementById('resizer');
-  const container = document.querySelector('.content') as HTMLElement;
-  const leftPanel = document.querySelector('.left-panel') as HTMLElement;
-  const rightPanel = document.querySelector('.right-panel') as HTMLElement;
-  
-  if (!resizer || !container || !leftPanel || !rightPanel) return;
-  
-  // 折叠状态：记录折叠前的比例，用于恢复
-  let previousRatio = parseFloat(localStorage.getItem('panelRatio') || '50');
-  let isLeftCollapsed = false;
-  let isRightCollapsed = false;
-  
-  // 从 localStorage 恢复比例，默认 25%（更靠左，给右侧更多空间）
-  const ratio = localStorage.getItem('panelRatio');
-  const leftWidth = ratio ? Math.max(20, Math.min(80, parseFloat(ratio))) : 25;
-  leftPanel.style.width = leftWidth + '%';
-  rightPanel.style.width = (100 - leftWidth) + '%';
-  
-  let isDragging = false;
-  
-  resizer.addEventListener('mousedown', (e) => {
-    // 如果点击的是按钮，不启动拖拽
-    if ((e.target as HTMLElement).classList.contains('resizer-btn')) return;
+/** 分栏拖拽：拖 #split-handle 调整左右比例（20%-80%） */
+function initSplitDrag() {
+  const handle = document.getElementById('split-handle');
+  const stage = document.querySelector('.editor-stage') as HTMLElement;
+  const panelJson = document.getElementById('panel-json');
+  if (!handle || !stage || !panelJson) return;
+  const savedRatio = parseFloat(localStorage.getItem('jsongrid-ratio') || '33.33');
+  const panel = panelJson as HTMLElement;
+  panel.style.flexBasis = Math.max(20, Math.min(80, savedRatio)) + '%';
+
+  let dragging = false;
+  handle.addEventListener('mousedown', (e) => {
+    if ((e.target as HTMLElement).closest('.separator-button')) return;
     e.preventDefault();
-    isDragging = true;
-    // 拖拽时重置折叠状态
-    isLeftCollapsed = false;
-    isRightCollapsed = false;
+    dragging = true;
+    document.body.style.cursor = 'col-resize';
     document.addEventListener('mousemove', onDrag);
     document.addEventListener('mouseup', stopDrag);
-    document.body.style.cursor = 'col-resize';
   });
-  
-   function onDrag(e: MouseEvent) {
-     if (!isDragging) return;
-     const containerWidth = container.offsetWidth;
-     let leftWidth = (e.clientX / containerWidth) * 100;
-     // 限制在 20%-80% 范围
-     leftWidth = Math.max(20, Math.min(80, leftWidth));
-     leftPanel.style.width = leftWidth + '%';
-     rightPanel.style.width = (100 - leftWidth) + '%';
-     localStorage.setItem('panelRatio', String(leftWidth));
-     previousRatio = leftWidth;
-     // 拖拽时重置折叠状态
-     isLeftCollapsed = false;
-     isRightCollapsed = false;
-   }
-  
+  function onDrag(e: MouseEvent) {
+    if (!dragging) return;
+    const rect = stage.getBoundingClientRect();
+    let pct = ((e.clientX - rect.left) / rect.width) * 100;
+    pct = Math.max(20, Math.min(80, pct));
+    panel.style.flexBasis = pct + '%';
+  }
   function stopDrag() {
-    isDragging = false;
+    dragging = false;
+    document.body.style.cursor = '';
     document.removeEventListener('mousemove', onDrag);
     document.removeEventListener('mouseup', stopDrag);
-    document.body.style.cursor = '';
+    const pct = parseFloat(panel.style.flexBasis) || 33.33;
+    localStorage.setItem('jsongrid-ratio', String(pct));
   }
-
-  // 折叠左侧面板按钮（◀）
-  document.getElementById('btn-collapse-left')?.addEventListener('click', () => {
-    if (isLeftCollapsed) {
-      // 恢复：回到之前的比例或 50/50
-      const restore = previousRatio || 50;
-      leftPanel.style.width = restore + '%';
-      rightPanel.style.width = (100 - restore) + '%';
-      localStorage.setItem('panelRatio', String(restore));
-      isLeftCollapsed = false;
-    } else {
-      // 折叠左侧：左 20%，右 80%
-      previousRatio = parseFloat(leftPanel.style.width) || 50;
-      leftPanel.style.width = '20%';
-      rightPanel.style.width = '80%';
-      localStorage.setItem('panelRatio', '20');
-      isLeftCollapsed = true;
-      isRightCollapsed = false;
-    }
-  });
-
-  // 折叠右侧面板按钮（▶）
-  document.getElementById('btn-collapse-right')?.addEventListener('click', () => {
-    if (isRightCollapsed) {
-      // 恢复：回到之前的比例或 50/50
-      const restore = previousRatio || 50;
-      leftPanel.style.width = restore + '%';
-      rightPanel.style.width = (100 - restore) + '%';
-      localStorage.setItem('panelRatio', String(restore));
-      isRightCollapsed = false;
-    } else {
-      // 折叠右侧：左 80%，右 20%
-      previousRatio = parseFloat(leftPanel.style.width) || 50;
-      leftPanel.style.width = '80%';
-      rightPanel.style.width = '20%';
-      localStorage.setItem('panelRatio', '80');
-      isRightCollapsed = true;
-      isLeftCollapsed = false;
-    }
-  });
-
-  // ========== 全屏切换 ==========
-  // 左侧全屏按钮（⛶）
-  document.getElementById('btn-fullscreen-left')?.addEventListener('click', () => {
-    if (container.classList.contains('fullscreen-left')) {
-      // 恢复
-      container.classList.remove('fullscreen-left');
-      const restore = previousRatio || 50;
-      leftPanel.style.width = restore + '%';
-      rightPanel.style.width = (100 - restore) + '%';
-    } else {
-      // 左侧全屏：隐藏右侧
-      container.classList.remove('fullscreen-right');
-      container.classList.add('fullscreen-left');
-      previousRatio = parseFloat(leftPanel.style.width) || 50;
-    }
-  });
-
-  // 右侧全屏按钮（⛶）
-  document.getElementById('btn-fullscreen-right')?.addEventListener('click', () => {
-    if (container.classList.contains('fullscreen-right')) {
-      // 恢复
-      container.classList.remove('fullscreen-right');
-      const restore = previousRatio || 50;
-      leftPanel.style.width = restore + '%';
-      rightPanel.style.width = (100 - restore) + '%';
-    } else {
-      // 右侧全屏：隐藏左侧
-      container.classList.remove('fullscreen-left');
-      container.classList.add('fullscreen-right');
-      previousRatio = parseFloat(leftPanel.style.width) || 50;
-    }
-  });
 }
 
 // ========== 错误高亮 ==========
 function highlightError(line: number, col: number) {
-  // 从 0 开始索引
- // 简化版本：只使用 scrollIntoView，不使用 markText（CodeMirror 6 API 不同）
-   // 直接滚动编辑器容器
-   const scroller = inputEditor.scrollDOM;
-   const lineNo = line - 1;
-   const lineHeight = 24; // approximate line height
-   scroller.scrollTop = lineNo * lineHeight;
-   // 5 秒后显示提示
-   setTimeout(() => {
-     setStatus(`错误位置: 第 ${line} 行，第 ${col + 1} 列`, 'error');
-   }, 100);
- }
+  const doc = inputEditor.state.doc;
+  const lineNo = Math.max(1, Math.min(line, doc.lines));
+  const lineInfo = doc.line(lineNo);
+  let from = lineInfo.from + (col || 0);
+  from = Math.max(lineInfo.from, Math.min(from, lineInfo.to));
+  let to = Math.min(from + 60, lineInfo.to);
+  if (to <= from) {
+    // 空行或 EOF：改标前一行最后一个真实字符（含换行符的 mark 会被 CodeMirror 拆成空段而丢弃）
+    if (lineNo > 1) {
+      const prev = doc.line(lineNo - 1);
+      from = Math.max(prev.from, prev.to - 1);
+      to = prev.to;
+    } else {
+      from = lineInfo.from;
+      to = Math.min(lineInfo.to, from + 1);
+    }
+  }
+  if (to <= from) return;
+  const mark = Decoration.mark({ class: 'cm-error-line' });
+  errorDecorations = Decoration.set([mark.range(from, to)]);
+  inputEditor.dispatch({
+    effects: EditorView.scrollIntoView(from, { y: 'center' })
+  });
+  if (errorClearTimer !== undefined) window.clearTimeout(errorClearTimer);
+  errorClearTimer = window.setTimeout(() => {
+    errorDecorations = Decoration.none;
+    inputEditor.dispatch({});
+  }, 5000);
+}
 
 init();
