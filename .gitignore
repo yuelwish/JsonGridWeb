@@ -9,6 +9,9 @@
 # Markdown 文档
 *.md
 
+# 例外：README 是 GitHub 仓库首页渲染的内容，必须入库
+!README.md
+
 # 依赖与构建产物
 node_modules/
 dist/
