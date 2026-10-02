@@ -197,6 +197,22 @@ body {
   background: #3b3b3b;
 }
 
+/* 全屏态：左右没有可拖的两栏，禁用拖拽；改成「点即回分屏」，光标与 hover 如实反映 */
+.editor-stage.json-full .separator,
+.editor-stage.grid-full .separator {
+  cursor: pointer;
+}
+
+.editor-stage.json-full .separator:hover,
+.editor-stage.grid-full .separator:hover {
+  background: #d0d0d0;
+}
+
+[data-theme="dark"] .editor-stage.json-full .separator:hover,
+[data-theme="dark"] .editor-stage.grid-full .separator:hover {
+  background: #4a4a4a;
+}
+
 /* ▶ 主按钮：30×100 圆角 10px 浅灰（原站 separator-button），绝对居中 */
 .separator {
   position: relative;
@@ -386,6 +402,16 @@ body {
 
 .round-btn:active {
   background: #0277bd;
+}
+
+/* 紧凑格式化开关：开启时用深蓝底区分于常亮的蓝底按钮 */
+.round-btn.is-on {
+  background: #01579b;
+  box-shadow: 0 0 0 2px #ffffff inset;
+}
+
+[aria-pressed="true"] .round-icon {
+  stroke-width: 2.5;
 }
 
 .round-icon {

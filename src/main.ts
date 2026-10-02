@@ -91,11 +91,86 @@ function getWorkerCode(): string {
       return { data: d, parseTime: performance.now() - t, size: s.length };
     }
 
-    function formatJSON(s) {
+    // 紧凑格式化：整行（含缩进与键前缀）不超过 100 列就折叠成一行
+    var COMPACT_WIDTH = 100;
+
+    function repeatSpaces(n) {
+      var s = '';
+      for (var i = 0; i < n; i++) s += '  ';
+      return s;
+    }
+
+    // indent = 当前值所在行的缩进层级；col = 该值文本在本行的起始列
+    function compactValue(v, indent, col) {
+      if (v === null || typeof v !== 'object') return JSON.stringify(v);
+
+      var isArr = Array.isArray(v);
+      var keys = isArr ? null : Object.keys(v);
+      var n = isArr ? v.length : keys.length;
+      if (n === 0) return isArr ? '[]' : '{}';
+
+      var items = [];
+      var i, k, keyText;
+      for (i = 0; i < n; i++) {
+        k = isArr ? null : keys[i];
+        keyText = k === null ? '' : JSON.stringify(k) + ': ';
+        items.push({
+          keyText: keyText,
+          text: compactValue(isArr ? v[i] : v[k], indent + 1, (indent + 1) * 2 + keyText.length)
+        });
+      }
+
+      var flat = isArr ? '[' : '{';
+      for (i = 0; i < items.length; i++) {
+        if (i > 0) flat += ', ';
+        flat += items[i].keyText + items[i].text;
+      }
+      flat += isArr ? ']' : '}';
+
+      // 任一子节点已换行就不能折叠；本行放得下才折叠
+      if (flat.indexOf('\\n') < 0 && col + flat.length <= COMPACT_WIDTH) return flat;
+
+      var pad = repeatSpaces(indent + 1);
+      var out = (isArr ? '[' : '{') + '\\n';
+      for (i = 0; i < items.length; i++) {
+        out += pad + items[i].keyText + items[i].text;
+        if (i < items.length - 1) out += ',';
+        out += '\\n';
+      }
+      out += repeatSpaces(indent) + (isArr ? ']' : '}');
+      return out;
+    }
+
+    // 紧凑路径每层都要拼一次整棵子树的扁平串，链式嵌套下是 O(深度²)：
+    // 实测深度 1000 需 10s、2000 跑不完，会把 Worker 占死导致后续请求全排队。
+    // 超过阈值直接回退原生 JSON.stringify（同样深度只需毫秒级）。
+    var COMPACT_MAX_DEPTH = 200;
+
+    function exceedsDepth(v, depth) {
+      if (depth > COMPACT_MAX_DEPTH) return true;
+      if (v === null || typeof v !== 'object') return false;
+      if (Array.isArray(v)) {
+        for (var i = 0; i < v.length; i++) {
+          if (exceedsDepth(v[i], depth + 1)) return true;
+        }
+        return false;
+      }
+      var keys = Object.keys(v);
+      for (var k = 0; k < keys.length; k++) {
+        // 注意：必须用 keys[k] 取值，用下标 k 会拿到 undefined
+        if (exceedsDepth(v[keys[k]], depth + 1)) return true;
+      }
+      return false;
+    }
+
+    function formatJSON(p) {
+      var s = typeof p === 'string' ? p : p.text;
+      var wantCompact = typeof p === 'string' ? false : !!p.compact;
       var t = performance.now();
       var d = JSON.parse(s);
-      var r = JSON.stringify(d, null, 2);
-      return { result: r, processTime: performance.now() - t, originalSize: s.length, formattedSize: r.length };
+      var compact = wantCompact && !exceedsDepth(d, 0);
+      var r = compact ? compactValue(d, 0, 0) : JSON.stringify(d, null, 2);
+      return { result: r, processTime: performance.now() - t, originalSize: s.length, formattedSize: r.length, compact: compact };
     }
 
     function compressJSON(s) {
@@ -541,7 +616,8 @@ function initEditors() {
   }), { decorations: v => v.decorations });
 
   inputEditor = new EditorView({
-    doc: JSON.stringify({"name":"JSON Grid 对比测试","version":"2.0","metadata":{"author":{"name":"Test User","email":"test@example.com","role":"developer","skills":["JavaScript","TypeScript","CSS","React"]},"stats":{"totalObjects":15,"maxDepth":5,"arrayCount":8}},"users":[{"id":1,"username":"alice","profile":{"firstName":"Alice","lastName":"Johnson","age":28,"address":{"street":"123 Main St","city":"New York","state":"NY","zipCode":"10001","coordinates":{"latitude":40.7128,"longitude":-74.006}},"contact":{"email":"alice@example.com","phone":"+1-555-0101","social":{"twitter":"@alice","github":"alice-dev","linkedin":"alice-johnson"}}},"preferences":{"theme":"dark","language":"zh-CN","notifications":{"email":true,"push":false,"sms":false}},"orders":[{"orderId":"ORD-001","date":"2026-07-01","items":[{"productId":"PROD-101","name":"Wireless Mouse","quantity":2,"price":29.99,"specs":{"color":"Black","connectivity":"Bluetooth 5.0","battery":"Rechargeable","dimensions":{"width":6.5,"height":2.5,"depth":4.0,"unit":"cm"}}},{"productId":"PROD-102","name":"Mechanical Keyboard","quantity":1,"price":89.99,"specs":{"switches":"Cherry MX Blue","layout":"Full-size","backlight":"RGB","keycaps":"PBT Double-shot"}}],"shipping":{"method":"Express","cost":15.99,"tracking":"TRK123456789","estimatedDelivery":"2026-07-03"},"payment":{"method":"Credit Card","last4":"4242","status":"completed"}}]},{"id":2,"username":"bob","profile":{"firstName":"Bob","lastName":"Smith","age":35,"address":{"street":"456 Oak Ave","city":"San Francisco","state":"CA","zipCode":"94102","coordinates":{"latitude":37.7749,"longitude":-122.4194}},"contact":{"email":"bob@example.com","phone":"+1-555-0102"}},"preferences":{"theme":"light","language":"en-US","notifications":{"email":true,"push":true,"sms":true}},"orders":[]}],"settings":{"general":{"siteName":"JSON Grid Test","maintenance":false,"debug":true},"features":{"gridView":true,"treeView":true,"search":true,"filter":{"enabled":true,"maxResults":100,"cacheResults":true}},"limits":{"maxFileSize":"10MB","maxRows":10000,"timeout":30000}}}, null, 2),
+    // 页面打开不带任何内容；默认数据由「样例」按钮按需注入（见 sample-data.ts）
+    doc: '',
     extensions: [
       basicSetup,
       json(),
@@ -779,6 +855,54 @@ function initTheme() {
   });
 }
 
+// ========== 紧凑格式化开关 ==========
+// 默认关闭：默认行为与源站完全一致（全量展开），需要紧凑时由用户自行开启。
+// 只影响「格式化」按钮，不影响压缩、复制、下载与 GRID。
+let compactFormat = false;
+
+function setCompactToggle(on: boolean) {
+  compactFormat = on;
+  const btn = document.getElementById('btn-compact');
+  if (!btn) return;
+  btn.classList.toggle('is-on', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on ? '紧凑格式化：开' : '紧凑格式化：关';
+}
+
+/** 按当前模式（紧凑/全量）格式化整个文档；格式化按钮与模式切换共用 */
+async function runFormat(quietIfEmpty = false) {
+  const input = inputEditor.state.doc.toString();
+  if (!input.trim()) {
+    if (!quietIfEmpty) setStatus('请输入 JSON', 'error');
+    return;
+  }
+  try {
+    setStatus('格式化中...');
+    const result = await workerRequest('format', { text: input, compact: compactFormat });
+    autoFormatting = true;
+    inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
+    updateStats();
+    autoFormatting = false;
+    // compactFormat 是开关状态，result.compact 是实际是否走了紧凑（深层嵌套会回退）
+    const modeNote = compactFormat && !result.compact ? ' (层级过深，已展开)' : result.compact ? ' (紧凑)' : '';
+    setStatus(`格式化完成${modeNote} (${fmtMs(result.processTime)}ms)`, 'success');
+  } catch (err: any) {
+    setStatus(`格式化失败: ${err.message}`, 'error');
+    if (err.line) highlightError(err.line, err.col || 0);
+  }
+}
+
+function initCompactToggle() {
+  setCompactToggle(localStorage.getItem('jsongrid-compact') === 'on');
+  document.getElementById('btn-compact')?.addEventListener('click', () => {
+    const next = !compactFormat;
+    localStorage.setItem('jsongrid-compact', next ? 'on' : 'off');
+    setCompactToggle(next);
+    // 切换后顺手按新模式重新格式化一次，省得用户再点一次格式化
+    void runFormat(true);
+  });
+}
+
 
 /** 主题按钮图标：亮色显月亮（点击去暗色），暗色显太阳（点击回亮色） */
 const MOON_PATH = 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z';
@@ -787,6 +911,21 @@ const SUN_PATH = 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-13a1 1 0 0 1 1 1v2a1 1
 function setThemeIcon(isDark: boolean) {
   const icon = document.querySelector('#btn-theme .round-icon path');
   if (icon) icon.setAttribute('d', isDark ? SUN_PATH : MOON_PATH);
+}
+
+/** 布局按钮图标：直接用源站同一套 Font Awesome 实心图标 path
+ *  分屏 fa-table-columns（viewBox 1:1），全屏 fa-expand（viewBox 7:8） */
+const ICON_SPLIT = 'M0 96C0 60.7 28.7 32 64 32H448c35.3 0 64 28.7 64 64V416c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V96zm64 64V416H224V160H64zm384 0H288V416H448V160z';
+const ICON_FULL = 'M0 180V56c0-13.3 10.7-24 24-24h124c6.6 0 12 5.4 12 12v40c0 6.6-5.4 12-12 12H64v84c0 6.6-5.4 12-12 12H12c-6.6 0-12-5.4-12-12zM288 44v40c0 6.6 5.4 12 12 12h84v84c0 6.6 5.4 12 12 12h40c6.6 0 12-5.4 12-12V56c0-13.3-10.7-24-24-24H300c-6.6 0-12 5.4-12 12zm148 276h-40c-6.6 0-12 5.4-12 12v84h-84c-6.6 0-12 5.4-12 12v40c0 6.6 5.4 12 12 12h124c13.3 0 24-10.7 24-24V332c0-6.6-5.4-12-12-12zM160 468v-40c0-6.6-5.4-12-12-12H64v-84c0-6.6-5.4-12-12-12H12c-6.6 0-12 5.4-12 12v124c0 13.3 10.7 24 24 24h124c6.6 0 12-5.4 12-12z';
+
+function setLayoutIcon(isFull: boolean) {
+  const svg = document.getElementById('layout-icon');
+  const path = document.querySelector('#layout-icon path');
+  if (!svg || !path) return;
+  const d = isFull ? ICON_FULL : ICON_SPLIT;
+  if (path.getAttribute('d') === d) return;
+  path.setAttribute('d', d);
+  svg.setAttribute('viewBox', isFull ? '0 0 448 512' : '0 0 512 512');
 }
 
 // ========== URL 参数 ==========
@@ -833,6 +972,8 @@ type LayoutMode = 'split' | 'json-full' | 'grid-full';
 let layoutMode: LayoutMode = 'split';
 
 function applyLayout() {
+  // 顶栏布局按钮图标跟随当前状态（分屏 ↔ 展开），源站用的是同一组 Font Awesome 实心图标
+  setLayoutIcon(layoutMode !== 'split');
   const stage = document.querySelector('.editor-stage') as HTMLElement;
   const panelJson = document.getElementById('panel-json')!;
   const panelGrid = document.getElementById('panel-grid')!;
@@ -914,22 +1055,7 @@ async function renderGridView() {
 
 // ========== 事件绑定 ==========
 function setupEventListeners() {
-  document.getElementById('btn-format')?.addEventListener('click', async () => {
-    const input = inputEditor.state.doc.toString();
-    if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
-    try {
-      setStatus('格式化中...');
-      const result = await workerRequest('format', input);
-      autoFormatting = true;
-      inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
-      updateStats();
-      autoFormatting = false;
-      setStatus(`格式化完成 (${fmtMs(result.processTime)}ms)`, 'success');
-    } catch (err: any) {
-      setStatus(`格式化失败: ${err.message}`, 'error');
-      if (err.line) highlightError(err.line, err.col || 0);
-    }
-  });
+  document.getElementById('btn-format')?.addEventListener('click', () => { void runFormat(); });
 
   document.getElementById('btn-minify')?.addEventListener('click', async () => {
     const input = inputEditor.state.doc.toString();
@@ -952,7 +1078,7 @@ function setupEventListeners() {
   document.getElementById('btn-sample')?.addEventListener('click', async () => {
     try {
       setStatus('加载样例...');
-      const result = await workerRequest('format', SAMPLE_JSON);
+      const result = await workerRequest('format', { text: SAMPLE_JSON, compact: compactFormat });
       autoFormatting = true;
       inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
       updateStats();
@@ -1014,7 +1140,7 @@ function setupEventListeners() {
      if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
      try {
        setStatus('渲染中...');
-       const result = await workerRequest('format', input);
+       const result = await workerRequest('format', { text: input, compact: compactFormat });
        if (result.result !== input) {
          autoFormatting = true;
          inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
@@ -1029,11 +1155,12 @@ function setupEventListeners() {
      }
    });
 
-   // 布局切换按钮：三态循环 分屏 → GRID 全屏 → JSON 全屏
-   document.getElementById('btn-layout')?.addEventListener('click', () => {
-     const next: LayoutMode = layoutMode === 'split' ? 'grid-full' : layoutMode === 'grid-full' ? 'json-full' : 'split';
+   // 布局切换按钮：只有两个状态 分屏 ↔ JSON 全屏
+  // GRID 全屏由分隔条底部的 ‹ › 按钮负责，不进这个循环
+  document.getElementById('btn-layout')?.addEventListener('click', () => {
+    const next: LayoutMode = layoutMode === 'split' ? 'json-full' : 'split';
      setLayout(next);
-     setStatus(next === 'split' ? '左右分屏' : next === 'grid-full' ? 'GRID 全屏' : 'JSON 全屏', 'info');
+     setStatus(next === 'split' ? '左右分屏' : 'JSON 全屏', 'info');
    });
 
    // Grid 视图：展开全部 / 折叠全部
@@ -1327,6 +1454,7 @@ function init() {
   initWorker();
   initEditors();
   initTheme();
+  initCompactToggle();
   setupEventListeners();
    updateStats();
   updateStats();
@@ -1354,12 +1482,23 @@ function initSplitDrag() {
   let dragging = false;
   handle.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('.separator-button')) return;
+    // 全屏态禁用拖拽：那里没有可调的两栏，硬算百分比只是写到隐藏面板上，看起来像卡住
+    if (layoutMode !== 'split') return;
     e.preventDefault();
     dragging = true;
     document.body.style.cursor = 'col-resize';
     document.addEventListener('mousemove', onDrag);
     document.addEventListener('mouseup', stopDrag);
   });
+
+  // 全屏态点分隔条空白处直接回到左右分屏；底部 ‹ › 按钮行为不变，仍可用于分屏切换
+  handle.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('.separator-button')) return;
+    if (layoutMode === 'split') return;
+    setLayout('split');
+    setStatus('左右分屏', 'info');
+  });
+
   function onDrag(e: MouseEvent) {
     if (!dragging) return;
     const rect = stage.getBoundingClientRect();
