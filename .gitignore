@@ -1,0 +1,18 @@
+# 点开头的文件与目录一律忽略（.git/ 由 git 自身保护，不受此规则影响）
+.*
+
+# 例外：以下必须入库，否则 workflow 与工具链配置会丢
+!.gitignore
+!.github/
+!.mise.toml
+
+# Markdown 文档
+*.md
+
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 日志与 CI 发 Release 时生成的打包产物
+*.log
+*.zip
