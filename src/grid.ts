@@ -112,11 +112,13 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     for (const row of rows) {
       const obj = row as { key: string; val: unknown };
       if (obj.key.length > maxKeyLen) maxKeyLen = obj.key.length;
-      const valStr = summarizeValue(obj.val);
-      if (valStr.length > maxValLen) maxValLen = valStr.length;
+      const valStr = collapsedLabelLength(obj.key, obj.val);
+      if (valStr > maxValLen) maxValLen = valStr;
     }
-    colWidths.push(Math.max(160, Math.min(300, Math.max(maxKeyLen, headers[0]?.length || 0) * 8 + 40)));
-    colWidths.push(Math.max(200, Math.min(500, Math.max(maxValLen, headers[1]?.length || 0) * 8 + 40)));
+    // 键列按最长 key 贴内容，不再用 160 下限把短 key 撑得很宽。
+    // 值列要按折叠标签算（[+] key {}），不能按 summarizeValue 的 {...}，否则 {} 会被折到下一行。
+    colWidths.push(Math.max(48, Math.min(300, maxKeyLen * 8 + 28)));
+    colWidths.push(Math.max(80, Math.min(640, maxValLen * 8 + 36)));
   } else {
     colWidths.push(56);
     for (let h = 1; h < headers.length; h++) {
@@ -398,25 +400,41 @@ function buildHeader(headers: string[], state: GridState): HTMLElement {
   return headerEl;
 }
 
-// 检测数组是否同构（所有元素键相同）
-function isHomogeneousArray(arr: unknown[]): boolean {
+// 对象数组：元素都是普通对象（允许各元素缺字段）。源站用键的并集排成横向列表，不要求同构。
+function isObjectArray(arr: unknown[]): boolean {
   if (arr.length === 0) return false;
-  const first = arr[0];
-  if (first === null || typeof first !== 'object' || Array.isArray(first)) return false;
-  const firstKeys = new Set(Object.keys(first as Record<string, unknown>));
-  for (let i = 1; i < arr.length; i++) {
-    if (arr[i] === null || typeof arr[i] !== 'object' || Array.isArray(arr[i])) return false;
-    const keys = new Set(Object.keys(arr[i] as Record<string, unknown>));
-    if (keys.size !== firstKeys.size) return false;
-    for (const k of firstKeys) {
-      if (!keys.has(k)) return false;
-    }
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
   }
   return true;
 }
 
+function objectArrayHeaders(arr: Record<string, unknown>[]): string[] {
+  const seen = new Set<string>();
+  const headers: string[] = [];
+  for (let i = 0; i < arr.length; i++) {
+    const keys = Object.keys(arr[i]);
+    for (let k = 0; k < keys.length; k++) {
+      if (!seen.has(keys[k])) {
+        seen.add(keys[k]);
+        headers.push(keys[k]);
+      }
+    }
+  }
+  return headers;
+}
+
 function isExpandable(val: unknown): boolean {
   return val !== null && typeof val === 'object';
+}
+
+// 折叠态实际画出的标签长度，用来估对象视图值列宽
+function collapsedLabelLength(key: string, val: unknown): number {
+  if (Array.isArray(val)) return 4 + key.length + 2 + String(val.length).length;
+  if (val !== null && typeof val === 'object') return 4 + key.length + 3;
+  if (val === null || val === undefined) return 4;
+  return String(val).length;
 }
 
 // 主线程轻量摘要，避免对完整结构 JSON.stringify（列宽/排序/过滤热路径）
@@ -744,7 +762,7 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
     const obj = row as { key: string; val: unknown };
     const keyW = state.colWidths[0] || 160;
     const keyPath = encodePathSegment(obj.key);
-    parts.push('<div class="grid-cell grid-key-cell' + navSelectedClass(state, keyPath, 'key') + '" style="flex:0 0 ' + keyW + 'px"'
+    parts.push('<div class="grid-cell grid-key-cell' + (isExpandable(obj.val) ? ' expandable-key' : '') + navSelectedClass(state, keyPath, 'key') + '" style="flex:0 0 ' + keyW + 'px"'
       + ' data-row-idx="' + actualIdx + '" data-col-idx="0"'
       + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="key">'
       + '<span class="cell-text' + searchCellClass(actualIdx, 0) + '">' + escHtml(obj.key) + '</span></div>');
@@ -815,7 +833,7 @@ function renderExpandableCell(
     innerHtml += renderNestedTable(val, expandKey, path);
   }
 
-  return '<div class="cell-expandable' + selClass + '"' + styleAttr
+  return '<div class="cell-expandable' + (isExpanded ? ' is-open' : '') + selClass + '"' + styleAttr
     + ' data-expand-key="' + escHtml(expandKey) + '"'
     + ' data-json-path="' + escHtml(path) + '" data-nav-target="value">'
     + innerHtml
@@ -840,8 +858,8 @@ function renderNestedTable(val: unknown, expandPath: string, jsonPath: string): 
     if (allSimple) {
       return renderNestedSimpleArrayTable(val, expandPath, jsonPath);
     }
-    if (isHomogeneousArray(val)) {
-      return renderNestedObjectArrayTable(val, expandPath, jsonPath);
+    if (isObjectArray(val)) {
+      return renderNestedObjectArrayTable(val as Record<string, unknown>[], expandPath, jsonPath);
     }
     return renderNestedSimpleArrayTable(val, expandPath, jsonPath);
   }
@@ -906,13 +924,15 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
 }
 
 function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath: string, jsonPath: string): string {
-  const headers = Object.keys(arr[0]);
+  const headers = objectArrayHeaders(arr);
   let html = '<table border="0" cellspacing="0" cellpadding="0" class="nested-grid-table">';
   // 表头：原站首列为空/# 索引列，其后为字段名
-  html += '<tr>';
-  html += '<td class="op grid-subheader-cell">#</td>';
+  html += '<tr class="nested-head-row">';
+  html += '<td class="op grid-subheader-cell nsh-index-head"><span class="nsh-dots">···</span></td>';
   for (const h of headers) {
-    html += '<td class="op grid-subheader-cell">' + escHtml(h) + '</td>';
+    html += '<td class="op grid-subheader-cell">'
+      + '<span class="nsh"><span class="nsh-grip">≡</span><span class="nsh-key">' + escHtml(h) + '</span>'
+      + '<span class="nsh-filter" title="Filter">▽</span><span class="nsh-more">⋮</span></span></td>';
   }
   html += '</tr>';
   // 数据行
@@ -924,11 +944,16 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
     // grid-nested-index-cell：# 索引列。点它表示选中整个数组元素（与顶层 # 列一致），
     // 而非仅这个序号格；据此在 updateNavHighlight 里点亮整行。
     html += '<td class="op grid-nested-index-cell' + rowSelCls + '"'
-      + ' data-json-path="' + escHtml(itemJson) + '" data-nav-target="value">' + (i + 1) + '</td>';
+      + ' data-json-path="' + escHtml(itemJson) + '" data-nav-target="value">'
+      + '<span class="nsh-rowgrip">⋮</span>' + (i + 1) + '</td>';
     for (const h of headers) {
-      const cellVal = item[h];
       const childExpand = expandPath + '|[' + i + ']|' + h;
       const childJson = itemJson + '|' + encodePathSegment(h);
+      if (!Object.prototype.hasOwnProperty.call(item, h)) {
+        html += '<td class="ov nested-missing' + rowSelCls + '">×</td>';
+        continue;
+      }
+      const cellVal = item[h];
       if (isExpandable(cellVal)) {
         const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
         html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '', rowSelCls) + '</td>';

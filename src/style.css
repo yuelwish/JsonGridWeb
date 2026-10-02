@@ -1214,10 +1214,15 @@ body {
 }
 
 /* 对象视图的键名列 */
+/* 对象视图的键名列：可展开值的 key 加粗（源站行为），其余正常 */
 .grid-key-cell {
   font-weight: 400;
   color: var(--text-color);
   border-right: 1px solid var(--grid-line-color);
+}
+
+.grid-key-cell.expandable-key {
+  font-weight: 700;
 }
 
 /* 类型颜色编码（原站实测）：string #0B6125 / number·boolean #811F24，暗色同 idle-fingers */
@@ -1363,7 +1368,7 @@ body {
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
   overflow: visible;
-  white-space: normal;
+  white-space: nowrap;
   min-width: 0;
   flex: 0 0 auto;
 }
@@ -1372,34 +1377,118 @@ body {
   background: var(--hover-color);
 }
 
-/* 子表头单元格（嵌套同构对象数组表头）。保留 JSON 原始大小写，不要 text-transform。 */
+/* 子表头：源站 key 行浅灰填充，保留原始大小写 */
 .grid-subheader-cell {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 700;
+  font-size: 13px;
+  color: #234a97;
+  font-weight: 500;
   letter-spacing: 0;
   padding: 6px 8px;
+  background: #ececec;
+  border-bottom: 2px solid #c5c5c5 !important;
 }
 
-[data-theme="dark"] .grid-subheader-cell {
-  color: var(--text-muted);
+.nsh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nsh-grip,
+.nsh-more,
+.nsh-rowgrip {
+  color: #9a9a9a;
+  font-size: 12px;
+}
+
+.nsh-key {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nsh-filter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #d9d9d9;
+  color: #666;
+  font-size: 10px;
+}
+
+.nsh-dots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #2196f3;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.nsh-rowgrip {
+  margin-right: 6px;
+}
+
+[data-theme="dark"] .nested-grid-table td.grid-subheader-cell {
+  color: #9ec5ff;
+  background: #3a3a3a;
+  border-bottom-color: #777 !important;
+}
+
+[data-theme="dark"] .nested-grid-table {
+  background: #3a3a3a;
+  border-color: #777;
+}
+
+[data-theme="dark"] .nested-grid-table td {
+  background: #323232;
+  border-color: #555;
+}
+
+[data-theme="dark"] .cell-expandable.is-open {
+  background: #3a3a3a;
+  border-color: #777;
 }
 
 /* 嵌套表格 - 1:1 复刻 jsongrid.com：table-in-cell，无 margin 缩进 */
 .nested-grid-table {
   border-collapse: collapse;
   width: max-content;
-  margin-top: 2px;
+  margin-top: 4px;
   margin-left: 0;
   margin-right: 0;
+  background: #f4f4f4;
+  border: 2px solid #c5c5c5;
 }
 
 .nested-grid-table td {
-  border: 1px solid var(--border-color);
-  padding: 4px 5px;
+  border: 1px solid #d0d0d0;
+  padding: 4px 8px;
   font-size: 13.5px;
   white-space: nowrap;
   vertical-align: top;
+  background: #fff;
+}
+
+/* 特异性要比 .nested-grid-table .op 的 background:transparent 高一档，
+   否则表头灰底会被同特异性的 .op 规则盖掉。 */
+.nested-grid-table td.grid-subheader-cell {
+  background: #ececec;
+}
+
+/* 展开后的区域：灰底 + 加粗边框，贴近源站嵌套块 */
+.cell-expandable.is-open {
+  background: #f3f3f3;
+  border: 2px solid #c5c5c5;
+  padding: 4px 6px;
+  box-sizing: border-box;
 }
 
 .nested-grid-table .op {
@@ -1414,6 +1503,12 @@ body {
   color: var(--text-color);
   min-width: 60px;
   padding-left: 5px;
+}
+
+.nested-grid-table .nested-missing {
+  color: #9a9a9a;
+  text-align: center;
+  font-weight: 600;
 }
 
 [data-theme="dark"] .nested-grid-table .op {
@@ -1461,7 +1556,9 @@ body {
   cursor: pointer;
   display: inline-block;
   margin-bottom: 5px;
-  font-weight: 500;
+  /* 源站可展开标签是加粗的，且 [+] key {} 必须同一行 */
+  font-weight: 700;
+  white-space: nowrap;
   color: #234a97;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 13.5px;
