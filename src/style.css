@@ -50,7 +50,7 @@
 
 body {
   /* 原站：Arial 16px */
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 16px;
   color: var(--text-color);
   background: var(--bg-color);
@@ -558,7 +558,7 @@ body {
 .cm-editor {
   height: 100%;
   /* 原站 Ace：Monaco/Menlo 14px/17px，背景 #F9F9F9 */
-  font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, 'Source Code Pro', monospace;
+  font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, 'Source Code Pro', source-code-pro, monospace;
   font-size: 14px;
   background: #f9f9f9;
 }
@@ -567,7 +567,7 @@ body {
 .cm-editor .cm-scroller,
 .cm-editor .cm-content,
 .cm-editor .cm-line {
-  font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, 'Source Code Pro', monospace !important;
+  font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, 'Source Code Pro', source-code-pro, monospace !important;
 }
 
 .cm-editor .cm-gutters {
@@ -608,6 +608,15 @@ body {
 
 .cm-editor .cm-content {
   padding: 0.5rem 0;
+  /* 原站 Ace 实测 .ace_content/.ace_line 行高 17px（14px 字号） */
+  line-height: 17px;
+}
+
+/* 行号栏：.cm-gutters 是 flex 容器，行数多于可视高度时会把 .cm-gutterElement 压扁
+   （实测 12.75px < 正文 17px），导致行号明显比正文挤。源站 Ace 行号与正文同距。 */
+.cm-editor .cm-gutterElement {
+  line-height: 17px;
+  flex-shrink: 0;
 }
 
 .cm-editor .cm-line {
