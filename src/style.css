@@ -13,6 +13,8 @@
   --surface-color: #ffffff;
   /* 边框 */
   --border-color: #e2e8f0;
+  /* GRID 格子线：比通用边框深一档，用于行列分隔线 */
+  --grid-line-color: #b6c4d4;
   /* 文字 */
   --text-color: #1e293b;
   --text-muted: #94a3b8;
@@ -35,6 +37,7 @@
   --bg-color: #3b3b3b;
   --surface-color: #323232;
   --border-color: #555555;
+  --grid-line-color: #6f6f6f;
   --text-color: #c0c0c0;
   --text-muted: #999999;
   --success-color: #4ade80;
@@ -236,6 +239,26 @@ body {
   font-style: normal;
 }
 
+/* 全屏态中间的竖排面板名（源站 JSON / GRID 侧栏字） */
+.separator-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: #222;
+  user-select: none;
+  pointer-events: none;
+}
+
+[data-theme="dark"] .separator-label {
+  color: #e8e8e8;
+}
+
 /* 底部 ‹ › 全屏切换按钮：稍高于贴底 */
 .separator-bottom {
   position: absolute;
@@ -252,25 +275,10 @@ body {
   font-size: 15px;
 }
 
-/* 全屏态：分隔条只留底部返回钮（grid-full 留 left，json-full 留 right） */
-.editor-stage.json-full .separator-button:not([data-side]),
-.editor-stage.grid-full .separator-button:not([data-side]) {
+/* 全屏态隐藏中间的 ▶，竖排文字由 #sep-label 显示 */
+.editor-stage.json-full #btn-render-grid,
+.editor-stage.grid-full #btn-render-grid {
   display: none;
-}
-
-.editor-stage.json-full .separator-button[data-side="left"],
-.editor-stage.grid-full .separator-button[data-side="right"] {
-  display: none;
-}
-
-.editor-stage.json-full .separator-button[data-side="right"],
-.editor-stage.grid-full .separator-button[data-side="left"] {
-  opacity: 0.45;
-}
-
-.editor-stage.json-full .separator-button[data-side="right"]:hover,
-.editor-stage.grid-full .separator-button[data-side="left"]:hover {
-  opacity: 1;
 }
 
 /* 左面板：标题条 + 编辑器 */
@@ -422,14 +430,16 @@ body {
 /* Grid 视图容器（全宽舞台内） */
 .grid-container {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 源站 .grid-body padding:10px，表格不贴边 */
+  padding: 10px;
   display: flex;
   flex-direction: column;
   min-height: 0;
   position: relative;
   background: var(--surface-color);
+  box-sizing: border-box;
 }
 
 /* 横向滚动条容器 */
@@ -575,6 +585,25 @@ body {
 
 .cm-editor .cm-scroller {
   overflow: auto;
+}
+
+/* 光标：真正隐形的是CodeMirror 绘制的 .cm-cursor 层。
+   CM6 baseTheme 按编辑器根节点的 light/dark 类给 .cm-cursor 上色，
+   而该类来自 darkTheme facet —— 本项目从未设置，于是光标恒为 black：
+   亮色下1.2px 偏细不易看，暗色主题（#323232 底）下几乎不可见。
+   这里跟随应用自己的 data-theme 加粗到 2px 并换成高对比色。
+   注：原生 caret-color 不要在这里改 —— CM 的 hideNativeSelection 以
+   Prec.highest + !important 强制接管（未聚焦透明、聚焦 currentColor），
+   而 .cm-content 的文字色本身已是 #c0c0c0 / #1e293b，聚焦时可见。 */
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left: 2px solid #0f172a !important;
+  margin-left: -1px;
+}
+
+[data-theme="dark"] .cm-editor .cm-cursor,
+[data-theme="dark"] .cm-editor .cm-dropCursor {
+  border-left-color: #e8e8e8 !important;
 }
 
 .cm-editor .cm-content {
@@ -954,20 +983,30 @@ body {
 /* Grid 视图 */
 /* 本元素不滚：纵向横向都由内层 .virtual-grid-body 承担，两条滚动条才能固定在可视区边缘。
    若 body 高度跟着内容（flex:none），滚动条会被带到内容末端，必须纵滚到底才可见。 */
+/* 源站表格是内容宽度的框（table border #c5c5c5），不铺满面板右侧。
+   宽度由 JS 按列宽总和写入；这里只禁止 flex 拉伸。 */
 .virtual-grid-wrapper {
-  flex: 1;
+  flex: 0 0 auto;
+  align-self: flex-start;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: relative;
-  border: 1px solid var(--border-color);
-  border-radius: 6px 6px 0 0;
+  border: 1px solid #c5c5c5;
+  border-radius: 0;
   min-height: 0;
+  max-width: none;
+  box-sizing: content-box;
   background: var(--surface-color);
 }
 
+/* 对象视图源站没有「键 / 值」表头行 */
+.virtual-grid-wrapper.is-object .virtual-grid-header {
+  display: none;
+}
+
 [data-theme="dark"] .virtual-grid-wrapper {
-  border-color: var(--border-color);
+  border-color: #777777;
   background: var(--surface-color);
 }
 
@@ -1090,7 +1129,7 @@ body {
    overflow-y 不能写 hidden —— 那会同时废掉纵向滚动和搜索定位。 */
 .virtual-grid-body {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   position: relative;
   font-size: 13.5px;
   color: #1e1919;
@@ -1119,7 +1158,7 @@ body {
 .grid-row {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--grid-line-color);
   font-size: 13.5px;
   line-height: 1.5;
   transition: background-color 0.12s ease;
@@ -1145,7 +1184,7 @@ body {
   text-overflow: ellipsis;
   flex: 0 0 auto;
   min-width: 0;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
 }
 
@@ -1166,7 +1205,7 @@ body {
   padding: 4px 0;
   font-size: 13px;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--grid-line-color);
   background: var(--bg-color);
 }
 
@@ -1178,7 +1217,7 @@ body {
 .grid-key-cell {
   font-weight: 400;
   color: var(--text-color);
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--grid-line-color);
 }
 
 /* 类型颜色编码（原站实测）：string #0B6125 / number·boolean #811F24，暗色同 idle-fingers */
@@ -1282,7 +1321,7 @@ body {
 }
 
 [data-theme="dark"] .grid-cell {
-  border-right-color: var(--border-color);
+  border-right-color: var(--grid-line-color);
   color: #c0c0c0;
 }
 
@@ -1295,12 +1334,12 @@ body {
 [data-theme="dark"] .grid-cell.type-array { color: #b8b8b8; }
 
 [data-theme="dark"] .grid-row {
-  border-bottom-color: var(--border-color);
+  border-bottom-color: var(--grid-line-color);
 }
 
 [data-theme="dark"] .grid-index-cell {
   color: var(--text-muted);
-  border-right-color: var(--border-color);
+  border-right-color: var(--grid-line-color);
   background: var(--bg-color);
 }
 
@@ -1321,7 +1360,7 @@ body {
   align-items: flex-start;
   justify-content: flex-start;
   padding: 4px 8px;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
   overflow: visible;
   white-space: normal;
@@ -1333,13 +1372,12 @@ body {
   background: var(--hover-color);
 }
 
-/* 子表头单元格（嵌套同构对象数组表头） */
+/* 子表头单元格（嵌套同构对象数组表头）。保留 JSON 原始大小写，不要 text-transform。 */
 .grid-subheader-cell {
   font-size: 11px;
   color: var(--text-muted);
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 0;
   padding: 6px 8px;
 }
 
@@ -1431,6 +1469,12 @@ body {
 
 [data-theme="dark"] .plus-minus {
   color: #b8b8b8;
+}
+
+/* 展开单元格：文字行是展开/收起入口，空白处是选中区。
+   空白需要额外的选中提示，否则与不可点的区域看不出区别。 */
+.cell-expandable {
+  cursor: pointer;
 }
 
 /* 对象属性名 (key) */

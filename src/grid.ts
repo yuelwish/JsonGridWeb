@@ -148,10 +148,11 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
   currentGridState = state;
 
   const wrapper = document.createElement('div');
-  wrapper.className = 'virtual-grid-wrapper';
+  wrapper.className = 'virtual-grid-wrapper' + (viewMode === 'object' ? ' is-object' : '');
 
   const headerEl = buildHeader(headers, state);
   wrapper.appendChild(headerEl);
+  syncFrameWidth(wrapper, colWidths);
 
   const body = document.createElement('div');
   body.className = 'virtual-grid-body';
@@ -196,8 +197,11 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     requestAnimationFrame(() => { syncingScroll = false; });
   });
 
-  // 点击事件委托：导航定位 + 展开折叠
-  // 叶子 key/value：仅导航；.plus-minus：导航+toggle；expandable 外壳空白：导航+toggle
+  // 点击事件委托：对象/数组的展开折叠 与 选中 是两件独立的事，按点击位置区分
+  //   .plus-minus 文字行（[+] / [-] 与名称）→ 仅 toggle 展开/收起
+  //   .cell-expandable 空白区域            → 仅选中（导航）
+  //   叶子 key/value                      → 仅选中
+  // 展开只是为了看一眼，不应该顺带把区域选中、也不该让左侧编辑器跳走。
   rowsEl.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
     const plusMinus = target.closest('.plus-minus') as HTMLElement | null;
@@ -208,12 +212,12 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     let shouldToggle = false;
 
     if (plusMinus) {
-      shouldNav = true;
+      shouldNav = false;
       shouldToggle = true;
     } else if (navEl && expandable && navEl === expandable) {
-      // 点在 expandable 外壳（含空白），不是嵌套表内叶子
+      // 点在 expandable 的空白区域：只选中，不展开/收起
       shouldNav = true;
-      shouldToggle = true;
+      shouldToggle = false;
     } else if (navEl) {
       // 叶子 key/value（含嵌套表内 td.op / td.ov / .grid-cell）
       shouldNav = true;
@@ -226,8 +230,15 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
       const path = navEl.getAttribute('data-json-path');
       const navTarget = (navEl.getAttribute('data-nav-target') || 'value') as 'key' | 'value';
       if (path != null) {
-        state.selectedNav = { path, target: navTarget };
-        dispatchGridNavigate(path, navTarget);
+        // 再次点击已选中的同一格子 => 取消选中（toggle）。
+        // 只改 GRID 侧选中态，不再派发导航；左侧编辑器的定位高亮会自行超时淡出。
+        if (state.selectedNav && state.selectedNav.path === path && state.selectedNav.target === navTarget) {
+          state.selectedNav = null;
+          dispatchGridNavClear();
+        } else {
+          state.selectedNav = { path, target: navTarget };
+          dispatchGridNavigate(path, navTarget);
+        }
       }
     }
 
@@ -312,9 +323,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
 function buildHeader(headers: string[], state: GridState): HTMLElement {
   const headerEl = document.createElement('div');
   headerEl.className = 'virtual-grid-header';
-  
-  // 使用 flex 布局
-  headerEl.style.display = 'flex';
+  // display:flex 放在 CSS。这里写 inline 会盖掉 .is-object 对表头的隐藏。
   headerEl.style.alignItems = 'stretch';
   
   for (let hIdx = 0; hIdx < headers.length; hIdx++) {
@@ -469,8 +478,13 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
     offset += state.rowHeights[i] || ROW_HEIGHT;
   }
   spacerEl.style.height = offset + 'px';
-  // ponytail: spacer 宽度设为 max-content 让横向滚动条出现
-  spacerEl.style.minWidth = 'max-content';
+  // 宽度跟列宽总和走。max-content 会比外框宽 1px，内容明明放下也冒出横向滚动条
+  let colSum = 0;
+  for (let c = 0; c < state.colWidths.length; c++) colSum += state.colWidths[c] || 0;
+  if (colSum > 0) {
+    spacerEl.style.width = colSum + 'px';
+    spacerEl.style.minWidth = colSum + 'px';
+  }
 
   // 可见范围
   let startIdx = 0;
@@ -552,10 +566,59 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
 }
 
 // 把测量后的列宽同步到表头，保证头/身对齐
+/** 外框按内容收缩（源站 table 不铺满面板）。高超过可视区时才在框内滚动。 */
+function syncFrameWidth(wrapper: HTMLElement, colWidths: number[]): void {
+  let w = 0;
+  for (let i = 0; i < colWidths.length; i++) w += colWidths[i] || 0;
+  if (w > 0) wrapper.style.width = w + 'px';
+
+  const state = currentGridState;
+  if (!state) return;
+  let contentH = 0;
+  const n = state.filteredRows.length;
+  for (let i = 0; i < n; i++) contentH += state.rowHeights[i] || ROW_HEIGHT;
+  const header = wrapper.querySelector('.virtual-grid-header') as HTMLElement | null;
+  if (header && getComputedStyle(header).display !== 'none') {
+    contentH += header.offsetHeight || 43;
+  }
+  const parent = wrapper.parentElement;
+  let avail = contentH;
+  if (parent) {
+    const pcs = getComputedStyle(parent);
+    const pad = (parseFloat(pcs.paddingTop) || 0) + (parseFloat(pcs.paddingBottom) || 0);
+    avail = Math.max(0, parent.clientHeight - pad);
+  }
+  const border = 2;
+  let availW = avail;
+  if (parent) {
+    const pcs = getComputedStyle(parent);
+    const padX = (parseFloat(pcs.paddingLeft) || 0) + (parseFloat(pcs.paddingRight) || 0);
+    availW = Math.max(0, parent.clientWidth - padX - border);
+  }
+  const frameW = w > 0 ? Math.min(w, availW) : 0;
+  const needsX = w > frameW + 1;
+  // 横向滚动条会吃掉约 15px 高度。内容本来放得下时把这 15px 算进框高，避免再挤出纵向滚动条
+  const contentWithBar = contentH + (needsX ? 15 : 0);
+  const frameH = Math.max(ROW_HEIGHT, Math.min(contentWithBar, Math.max(0, avail - border)));
+  if (frameW > 0) wrapper.style.width = frameW + 'px';
+  wrapper.style.height = frameH + 'px';
+  wrapper.style.flex = '0 0 auto';
+  const body = wrapper.querySelector('.virtual-grid-body') as HTMLElement | null;
+  if (body) {
+    body.style.overflowX = needsX ? 'auto' : 'hidden';
+    body.style.overflowY = contentWithBar > frameH + 1 ? 'auto' : 'hidden';
+  }
+}
+
 function syncHeaderWidths(state: GridState): void {
   const headerEl = state.headerEl;
+  const wrapper = state.container ? state.container.parentElement : null;
+  if (wrapper) syncFrameWidth(wrapper, state.colWidths);
   if (!headerEl) return;
-  headerEl.style.display = 'flex';
+  // 对象视图表头由 .is-object 隐藏，不能再写 inline display:flex 盖掉
+  if (!wrapper || !wrapper.classList.contains('is-object')) {
+    headerEl.style.display = 'flex';
+  }
   const cells = headerEl.children;
   for (let c = 0; c < cells.length && c < state.colWidths.length; c++) {
     const cell = cells[c] as HTMLElement;
@@ -648,8 +711,11 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
     // 顶层数组路径用原始数据索引，与 getCellPath 一致（禁止 indexOf 首次命中）
     const originalIdx = state.rowOriginalIndices[actualIdx] ?? actualIdx;
     const rowPath = encodePathSegment(String(originalIdx));
+    // 点# 列选中的是整个数组元素（rowPath），不是那个序号数字，
+    // 因此整行格子都要高亮；数据格路径为 rowPath + '|' + 字段，不会与 rowPath 撞车
+    const rowSelCls = isArrayRowSelected(state, rowPath) ? ' grid-nav-selected' : '';
     const idxW = state.colWidths[0] || 56;
-    parts.push('<div class="grid-cell grid-index-cell' + navSelectedClass(state, rowPath, 'value') + '" style="flex:0 0 ' + idxW + 'px"'
+    parts.push('<div class="grid-cell grid-index-cell' + rowSelCls + '" style="flex:0 0 ' + idxW + 'px"'
       + ' data-json-path="' + escHtml(rowPath) + '" data-nav-target="value">'
       + '<span class="row-three-dot">⋮</span>'
       + '<span class="row-index-num">' + (actualIdx + 1) + '</span></div>');
@@ -663,11 +729,11 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
         // expandKey 仍用可见行下标，保证展开状态与 expandAll 一致
         const expandKey = actualIdx + '|' + field;
         const isExpanded = state.expandedCells.has(expandKey);
-        parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath, searchCellClass(actualIdx, h)));
+        parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath, searchCellClass(actualIdx, h), rowSelCls));
       } else {
         const { display, typeClass } = formatCell(val);
         const truncated = truncateText(display);
-        parts.push('<div class="grid-cell ' + typeClass + navSelectedClass(state, cellPath, 'value') + '" style="flex:0 0 ' + w + 'px"'
+        parts.push('<div class="grid-cell ' + typeClass + (navSelectedClass(state, cellPath, 'value') || rowSelCls) + '" style="flex:0 0 ' + w + 'px"'
           + ' data-row-idx="' + actualIdx + '" data-col-idx="' + h + '"'
           + ' data-json-path="' + escHtml(cellPath) + '" data-nav-target="value"'
           + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
@@ -710,16 +776,22 @@ function renderExpandableCell(
   isExpanded: boolean,
   colWidth: number | undefined,
   jsonPath: string,
-  searchCls: string
+  searchCls: string,
+  forceSelClass?: string
 ): string {
-  let expandedLabel = '';
+  // 标签文字：[+] / [-] 与名称连成一行，整体不可拆：
+  //   点这行字= 展开/收起；点单元格的空白处 = 选中
+  let toggleSign = '';
+  let labelText = '';
 
   if (Array.isArray(val)) {
     // 原站：[-] key[count]
-    expandedLabel = (isExpanded ? '[-]' : '[+]') + ' ' + escHtml(headerName) + '[' + val.length + ']';
+    toggleSign = isExpanded ? '[-]' : '[+]';
+    labelText = ' ' + escHtml(headerName) + '[' + val.length + ']';
   } else if (val !== null && typeof val === 'object') {
     // 原站：[-] key {}（空花括号，不写 key 数量）
-    expandedLabel = (isExpanded ? '[-]' : '[+]') + ' ' + escHtml(headerName) + ' {}';
+    toggleSign = isExpanded ? '[-]' : '[+]';
+    labelText = ' ' + escHtml(headerName) + ' {}';
   }
 
   // 折叠：固定列宽对齐；展开：至少保持列宽，内容可撑开（table-in-cell）
@@ -731,10 +803,13 @@ function renderExpandableCell(
     styleAttr = ' style="flex:0 0 ' + colWidth + 'px"';
   }
 
+  // 整个 .plus-minus 文字行（[+] 与名称）都只负责展开/收起：
+  //   有字的地方 = 展开/收起；单元格的空白处 = 选中。
+  // 因此它不再携带 data-json-path，选中目标由外层 .cell-expandable 承担。
   const path = jsonPath;
-  const selClass = navSelectedClass(currentGridState, path, 'value');
-  let innerHtml = '<div class="plus-minus' + selClass + searchCls + '" data-json-path="' + escHtml(path) + '" data-nav-target="value">'
-    + expandedLabel + '</div>';
+  // forceSelClass：数组视图选中整个元素时，整行格子（含可展开格）一起高亮
+  const selClass = forceSelClass || navSelectedClass(currentGridState, path, 'value');
+  let innerHtml = '<div class="plus-minus' + searchCls + '">' + toggleSign + labelText + '</div>';
   if (isExpanded) {
     // 嵌套表使用 jsonPath 作为真实数据路径前缀
     innerHtml += renderNestedTable(val, expandKey, path);
@@ -808,17 +883,19 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
     const item = arr[i];
     const childExpand = expandPath + '|[' + i + ']';
     const childJson = jsonPath + '|' + encodePathSegment(String(i));
+    const rowSelCls = isArrayRowSelected(currentGridState, childJson) ? ' grid-nav-selected' : '';
     html += '<tr>';
-    html += '<td class="op' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+    // 简单数组的 # 索引列：同样代表整个数组元素，标记见renderNestedObjectArrayTable
+    html += '<td class="op grid-nested-index-cell' + rowSelCls + '"'
       + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">' + (i + 1) + '</td>';
     if (isExpandable(item)) {
       const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
-      html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '') + '</td>';
+      html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
     } else {
       const display = item === null ? 'null' : String(item);
       const truncated = truncateText(display);
       const typeClass = item === null ? 'type-null' : 'type-' + typeof item;
-      html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+      html += '<td class="ov' + rowSelCls + '"'
         + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
         + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
     }
@@ -842,8 +919,11 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
   for (let i = 0; i < arr.length; i++) {
     const item = arr[i];
     const itemJson = jsonPath + '|' + encodePathSegment(String(i));
+    const rowSelCls = isArrayRowSelected(currentGridState, itemJson) ? ' grid-nav-selected' : '';
     html += '<tr>';
-    html += '<td class="op' + navSelectedClass(currentGridState, itemJson, 'value') + '"'
+    // grid-nested-index-cell：# 索引列。点它表示选中整个数组元素（与顶层 # 列一致），
+    // 而非仅这个序号格；据此在 updateNavHighlight 里点亮整行。
+    html += '<td class="op grid-nested-index-cell' + rowSelCls + '"'
       + ' data-json-path="' + escHtml(itemJson) + '" data-nav-target="value">' + (i + 1) + '</td>';
     for (const h of headers) {
       const cellVal = item[h];
@@ -851,12 +931,12 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
       const childJson = itemJson + '|' + encodePathSegment(h);
       if (isExpandable(cellVal)) {
         const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
-        html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '') + '</td>';
+        html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
       } else {
         const display = cellVal === null ? 'null' : String(cellVal);
         const truncated = truncateText(display);
         const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
-        html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
+        html += '<td class="ov' + (rowSelCls || navSelectedClass(currentGridState, childJson, 'value')) + '"'
           + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
           + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
       }
@@ -879,22 +959,56 @@ function navSelectedClass(
   return '';
 }
 
+/**
+ * 数组视图：当前选中的是否是某个数组元素根（路径就是 rowPath 本身）。
+ * 点 # 列选中的是「整个元素」而非序号数字，所以整行格子都要高亮。
+ * 数据格路径为rowPath + '|' + 字段，与 rowPath 不会撞车。
+ */
+function isArrayRowSelected(state: GridState | null, rowPath: string): boolean {
+  if (!state) return false;
+  const sel = state.selectedNav;
+  return !!sel && sel.target === 'value' && sel.path === rowPath;
+}
+
 /** 选中态变化时增量切换 grid-nav-selected，避免全量重绘闪烁 */
 function updateNavHighlight(state: GridState, root: HTMLElement): void {
+  // 先清掉全部旧选中（元素数量很少），再按当前选中重新点亮。
+  // 整行选中的格子 path 各不相同，无法靠 path 相等来判定保留，故用全量重来。
+  root.querySelectorAll('.grid-nav-selected').forEach(el => el.classList.remove('grid-nav-selected'));
+
   const sel = state.selectedNav;
-  root.querySelectorAll('.grid-nav-selected').forEach(el => {
-    const path = el.getAttribute('data-json-path');
-    const target = (el.getAttribute('data-nav-target') || 'value') as 'key' | 'value';
-    if (!sel || path !== sel.path || target !== sel.target) {
-      el.classList.remove('grid-nav-selected');
-    }
-  });
-  if (sel) {
-    const next = root.querySelector('[data-json-path="' + cssEscapeAttr(sel.path) + '"][data-nav-target="' + sel.target + '"]');
-    if (next && !next.classList.contains('grid-nav-selected')) {
-      next.classList.add('grid-nav-selected');
+  if (!sel) return;
+
+  // 嵌套表里的 # 索引列（td.op.grid-nested-index-cell）→ 点亮所在整行
+  const nestedIdx = root.querySelector('.grid-nested-index-cell[data-json-path="' + cssEscapeAttr(sel.path) + '"]');
+  if (nestedIdx && sel.target === 'value') {
+    const tr = nestedIdx.parentElement;
+    if (tr) {
+      const cells = tr.children;
+      for (let i = 0; i < cells.length; i++) cells[i].classList.add('grid-nav-selected');
+      return;
     }
   }
+
+  // 顶层数组元素根 → 点亮整行
+  const idxCell = root.querySelector('.grid-index-cell[data-json-path="' + cssEscapeAttr(sel.path) + '"]');
+  if (idxCell && sel.target === 'value') {
+    const row = idxCell.parentElement;
+    if (row) {
+      // 只取直接子元素：嵌套表里的格子属于各自的路径，不应跟着整行一起亮
+      const children = row.children;
+      for (let i = 0; i < children.length; i++) {
+        const el = children[i] as HTMLElement;
+        if (el.classList.contains('grid-cell') || el.classList.contains('cell-expandable')) {
+          el.classList.add('grid-nav-selected');
+        }
+      }
+      return;
+    }
+  }
+
+  const next = root.querySelector('[data-json-path="' + cssEscapeAttr(sel.path) + '"][data-nav-target="' + sel.target + '"]');
+  if (next) next.classList.add('grid-nav-selected');
 }
 
 /** 属性选择器值转义（引号与反斜杠） */
@@ -913,6 +1027,11 @@ function dispatchGridNavigate(pathKey: string, target: 'key' | 'value'): void {
   window.dispatchEvent(new CustomEvent('grid-navigate', {
     detail: { path: segments, target }
   }));
+}
+
+/** 取消选中时通知主线程立即清掉左侧编辑器的定位高亮（否则要等它自己超时） */
+function dispatchGridNavClear(): void {
+  window.dispatchEvent(new CustomEvent('grid-nav-clear'));
 }
 
 function escHtml(text: string): string {

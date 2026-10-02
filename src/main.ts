@@ -540,8 +540,6 @@ function initEditors() {
     }
   }), { decorations: v => v.decorations });
 
-  let autoFormatTimer: number;
-
   inputEditor = new EditorView({
     doc: JSON.stringify({"name":"JSON Grid 对比测试","version":"2.0","metadata":{"author":{"name":"Test User","email":"test@example.com","role":"developer","skills":["JavaScript","TypeScript","CSS","React"]},"stats":{"totalObjects":15,"maxDepth":5,"arrayCount":8}},"users":[{"id":1,"username":"alice","profile":{"firstName":"Alice","lastName":"Johnson","age":28,"address":{"street":"123 Main St","city":"New York","state":"NY","zipCode":"10001","coordinates":{"latitude":40.7128,"longitude":-74.006}},"contact":{"email":"alice@example.com","phone":"+1-555-0101","social":{"twitter":"@alice","github":"alice-dev","linkedin":"alice-johnson"}}},"preferences":{"theme":"dark","language":"zh-CN","notifications":{"email":true,"push":false,"sms":false}},"orders":[{"orderId":"ORD-001","date":"2026-07-01","items":[{"productId":"PROD-101","name":"Wireless Mouse","quantity":2,"price":29.99,"specs":{"color":"Black","connectivity":"Bluetooth 5.0","battery":"Rechargeable","dimensions":{"width":6.5,"height":2.5,"depth":4.0,"unit":"cm"}}},{"productId":"PROD-102","name":"Mechanical Keyboard","quantity":1,"price":89.99,"specs":{"switches":"Cherry MX Blue","layout":"Full-size","backlight":"RGB","keycaps":"PBT Double-shot"}}],"shipping":{"method":"Express","cost":15.99,"tracking":"TRK123456789","estimatedDelivery":"2026-07-03"},"payment":{"method":"Credit Card","last4":"4242","status":"completed"}}]},{"id":2,"username":"bob","profile":{"firstName":"Bob","lastName":"Smith","age":35,"address":{"street":"456 Oak Ave","city":"San Francisco","state":"CA","zipCode":"94102","coordinates":{"latitude":37.7749,"longitude":-122.4194}},"contact":{"email":"bob@example.com","phone":"+1-555-0102"}},"preferences":{"theme":"light","language":"en-US","notifications":{"email":true,"push":true,"sms":true}},"orders":[]}],"settings":{"general":{"siteName":"JSON Grid Test","maintenance":false,"debug":true},"features":{"gridView":true,"treeView":true,"search":true,"filter":{"enabled":true,"maxResults":100,"cacheResults":true}},"limits":{"maxFileSize":"10MB","maxRows":10000,"timeout":30000}}}, null, 2),
     extensions: [
@@ -560,13 +558,12 @@ function initEditors() {
           }
           navDecorations = Decoration.none;
         }
+        // 编辑时只更新字数统计，不做任何自动格式化 / 自动同步：
+        // 自动格式化会在按回车时重排全文、吃掉手动输入的空格，
+        // 且会连带触发 renderGridView 让 GRID 跟着跳。
+        // GRID 的刷新改为手动：点 #btn-render-grid。
         if (update.docChanged && !autoFormatting) {
           updateStats();
-          // debounce 500ms 自动格式化
-          clearTimeout(autoFormatTimer);
-          autoFormatTimer = window.setTimeout(() => {
-            autoFormat();
-          }, 500);
         }
       })
     ],
@@ -581,32 +578,11 @@ function updateStats() {
 }
 
 /**
- * 自动格式化：静默尝试，失败时不清空输出
- * 修复：始终更新输出，不检查 currentOutput 是否为空
+ * autoFormatting：程序化改写编辑器内容时的重入标记。
+ * 手动触发格式化/压缩/渲染等操作会改写全文，靠它避免与 docChanged 钩子互相干扰。
+ * 注：已取消「编辑时自动格式化」，此标记仅服务于手动按钮与 GRID 回写。
  */
 let autoFormatting = false;
-
-async function autoFormat() {
-  if (autoFormatting) return;
-  const input = inputEditor.state.doc.toString();
-  if (!input.trim()) return;
-  try {
-    const result = await workerRequest('format', input);
-    const formatted = result.result;
-    // 如果已经格式化过（内容相同），跳过
-    if (formatted === input) {
-      if (layoutMode !== 'json-full') renderGridView();
-      return;
-    }
-    autoFormatting = true;
-    inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: formatted } });
-    updateStats();
-    autoFormatting = false;
-    if (layoutMode !== 'json-full') renderGridView();
-  } catch {
-    // 无效 JSON，不更新
-  }
-}
 
 /** 耗时显示：<0.01ms 时保留有效位，避免 0.00ms 假象 */
 function fmtMs(ms: number): string {
@@ -868,22 +844,45 @@ function applyLayout() {
   stage.classList.toggle('json-full', layoutMode === 'json-full');
   stage.classList.toggle('grid-full', layoutMode === 'grid-full');
 
+  const label = document.getElementById('sep-label')!;
+  const leftBtn = splitHandle.querySelector('[data-side="left"]') as HTMLButtonElement;
+  const rightBtn = splitHandle.querySelector('[data-side="right"]') as HTMLButtonElement;
+  const leftIcon = leftBtn.querySelector('.sep-icon')!;
+  const rightIcon = rightBtn.querySelector('.sep-icon')!;
+
+  splitHandle.style.display = 'flex';
+  panelJson.style.display = layoutMode === 'grid-full' ? 'none' : 'flex';
+  panelGrid.style.display = layoutMode === 'json-full' ? 'none' : 'flex';
+  gridStage.style.display = layoutMode === 'json-full' ? 'none' : 'flex';
+
   if (layoutMode === 'split') {
-    panelJson.style.display = 'flex';
-    panelGrid.style.display = 'flex';
-    splitHandle.style.display = 'flex';
+    // 中间 ▶ 渲染；底部 ‹ GRID 全屏、› JSON 全屏
+    label.hidden = true;
     renderBtn.style.display = 'flex';
-    gridStage.style.display = 'flex';
+    leftIcon.textContent = '‹';
+    rightIcon.textContent = '›';
+    leftBtn.title = 'GRID 全屏';
+    rightBtn.title = 'JSON 全屏';
+    renderGridView();
+  } else if (layoutMode === 'grid-full') {
+    // 中间竖排 JSON；底部 › 回到分屏、» 切到 JSON 全屏
+    label.hidden = false;
+    label.textContent = 'JSON';
+    renderBtn.style.display = 'none';
+    leftIcon.textContent = '›';
+    rightIcon.textContent = '»';
+    leftBtn.title = '回到左右分屏';
+    rightBtn.title = 'JSON 全屏';
     renderGridView();
   } else {
-    // 全屏态：隐藏另一侧；分隔条只留底部返回钮，▶ 隐藏
-    splitHandle.style.display = 'flex';
+    // 中间竖排 GRID；底部 « 切到 GRID 全屏、‹ 回到分屏
+    label.hidden = false;
+    label.textContent = 'GRID';
     renderBtn.style.display = 'none';
-    const jsonFull = layoutMode === 'json-full';
-    panelJson.style.display = jsonFull ? 'flex' : 'none';
-    panelGrid.style.display = jsonFull ? 'none' : 'flex';
-    gridStage.style.display = jsonFull ? 'none' : 'flex';
-    if (!jsonFull) renderGridView();
+    leftIcon.textContent = '«';
+    rightIcon.textContent = '‹';
+    leftBtn.title = 'GRID 全屏';
+    rightBtn.title = '回到左右分屏';
   }
 
   localStorage.setItem('jsongrid-layout', layoutMode);
@@ -999,12 +998,16 @@ function setupEventListeners() {
     customizeSearchPanel();
   });
 
-   // 分隔条：‹ 右侧全屏 / › 左侧全屏；▶ 把左侧 JSON 格式化渲染到右侧 GRID
+   // 分隔条底部两个钮的含义随布局变，见 applyLayout 里的 title
    document.querySelector('#split-handle [data-side="left"]')?.addEventListener('click', () => {
-     setLayout(layoutMode === 'grid-full' ? 'split' : 'grid-full');
+     if (layoutMode === 'split') setLayout('grid-full');
+     else if (layoutMode === 'grid-full') setLayout('split');
+     else setLayout('grid-full');
    });
    document.querySelector('#split-handle [data-side="right"]')?.addEventListener('click', () => {
-     setLayout(layoutMode === 'json-full' ? 'split' : 'json-full');
+     if (layoutMode === 'split') setLayout('json-full');
+     else if (layoutMode === 'grid-full') setLayout('json-full');
+     else setLayout('split');
    });
    document.getElementById('btn-render-grid')?.addEventListener('click', async () => {
      const input = inputEditor.state.doc.toString();
@@ -1244,6 +1247,11 @@ function setupEventListeners() {
       setStatus(`更新失败: ${err.message}`, 'error');
     }
   });
+  // GridSync：右侧取消选中 → 左侧立即清除定位高亮
+  window.addEventListener('grid-nav-clear', () => {
+    clearNavHighlight();
+  });
+
   // GridSync：右侧点击路径 → Worker 定位 → 左侧滚动并高亮
   window.addEventListener('grid-navigate', async (e: Event) => {
     const detail = (e as CustomEvent).detail as {
@@ -1299,6 +1307,19 @@ function applyNavHighlight(from: number, to: number) {
     navDecorations = Decoration.none;
     inputEditor.dispatch({});
   }, 2500);
+}
+
+/** 右侧取消选中：立即清掉左侧的定位高亮，不等它 2.5s 超时 */
+function clearNavHighlight(): void {
+  if (navClearTimer !== undefined) {
+    window.clearTimeout(navClearTimer);
+    navClearTimer = undefined;
+  }
+  navDecorations = Decoration.none;
+  // applyNavHighlight 同时做了两件事：挂 cm-nav-match 装饰 + 设编辑器选区。
+  // 只清装饰会留下一个深蓝选区色块，必须把选区塔回光标位置。
+  const head = inputEditor.state.selection.main.head;
+  inputEditor.dispatch({ selection: { anchor: head } });
 }
 
 // ========== 初始化 ==========

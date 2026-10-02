@@ -36,10 +36,11 @@
 
       <!-- 分隔条：深灰竖条，▶ 渲染按钮居中 + 底部 ‹ › 全屏切换（原站 separator 结构） -->
       <div id="split-handle" class="separator">
+        <div id="sep-label" class="separator-label" hidden>JSON</div>
         <button id="btn-render-grid" class="separator-button" title="把左侧 JSON 渲染到右侧 GRID"><span class="sep-icon">▶</span></button>
         <div class="separator-bottom">
-          <button class="separator-button sep-small" data-side="left" title="右侧全屏（隐藏左侧 JSON）"><span class="sep-icon">‹</span></button>
-          <button class="separator-button sep-small" data-side="right" title="左侧全屏（隐藏右侧 GRID）"><span class="sep-icon">›</span></button>
+          <button class="separator-button sep-small" data-side="left" title="GRID 全屏"><span class="sep-icon">‹</span></button>
+          <button class="separator-button sep-small" data-side="right" title="JSON 全屏"><span class="sep-icon">›</span></button>
         </div>
       </div>
 
