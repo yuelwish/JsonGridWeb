@@ -581,6 +581,8 @@ body {
 
 [data-theme="dark"] .cm-editor .cm-gutters {
   background: #323232;
+  /* 原站暗色 Ace idle-fingers 实测行号 #999 */
+  color: #999;
 }
 
 .cm-editor .cm-scroller {
@@ -641,7 +643,8 @@ body {
 .cm-editor .cm-gutters {
   background: #f9f9f9;
   border-right: 1px solid var(--border-color);
-  color: var(--text-muted);
+  /* 原站 Ace 实测行号 #333（此前用 --text-muted #94a3b8，明显偏浅） */
+  color: #333;
 }
 
 .cm-editor .cm-activeLineGutter {
