@@ -81,14 +81,27 @@ body {
   border-bottom-color: var(--border-color);
 }
 
+/* 原站 .logo 实测：img 36x36 贴 left:0，JSON 起于 42px（图标 + 6px 间距），
+   JSON 宽 57px，GRID 紧接着从 99px 起 —— 两段文字之间没有间距，
+   渲染成一个连续的 JSONGRID。字距为 normal（非 -0.01em）。 */
 .toolbar-left h1 {
+  display: flex;
+  align-items: center;
   font-size: 21px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: normal;
+}
+
+.toolbar-left .logo-mark {
+  width: 36px;
+  height: 36px;
+  display: block;
+  flex: 0 0 auto;
+  margin-right: 6px;
 }
 
 .toolbar-left .logo-json { color: #fbfbfb; }
-.toolbar-left .logo-grid { color: #82d3ff; margin-left: 6px; }
+.toolbar-left .logo-grid { color: #82d3ff; }
 
 .toolbar-right {
   flex: 0 0 auto;
