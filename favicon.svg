@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 背景：与顶栏同色 #375a7f -->
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#375a7f"/>
+  <!-- 2x2 网格：边距 14，格子 16，间隙 4 -->
+  <rect x="14" y="14" width="16" height="16" rx="4" fill="#fbfbfb"/>
+  <rect x="34" y="14" width="16" height="16" rx="4" fill="#82d3ff"/>
+  <rect x="14" y="34" width="16" height="16" rx="4" fill="#fbfbfb"/>
+  <rect x="34" y="34" width="16" height="16" rx="4" fill="#fbfbfb"/>
+</svg>
