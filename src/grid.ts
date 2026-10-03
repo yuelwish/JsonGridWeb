@@ -142,34 +142,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
 
   const expandedCells = new Set<string>();
 
-  // 直接计算列宽
-  const colWidths: number[] = [];
-  if (viewMode === 'object') {
-    let maxKeyLen = 0;
-    let maxValLen = 0;
-    for (const row of rows) {
-      const obj = row as { key: string; val: unknown };
-      if (obj.key.length > maxKeyLen) maxKeyLen = obj.key.length;
-      const valStr = collapsedLabelLength(obj.key, obj.val);
-      if (valStr > maxValLen) maxValLen = valStr;
-    }
-    // 键列按最长 key 贴内容，不再用 160 下限把短 key 撑得很宽。
-    // 值列要按折叠标签算（[+] key {}），不能按 summarizeValue 的 {...}，否则 {} 会被折到下一行。
-    colWidths.push(Math.max(48, Math.min(300, maxKeyLen * 8 + 28)));
-    colWidths.push(Math.max(80, Math.min(640, maxValLen * 8 + 36)));
-  } else {
-    colWidths.push(56);
-    for (let h = 1; h < headers.length; h++) {
-      let maxLen = headers[h]?.length || 0;
-      for (const row of rows) {
-        const item = row as Record<string, unknown>;
-        const val = item ? item[headers[h]] : undefined;
-        const valStr = summarizeValue(val);
-        if (valStr.length > maxLen) maxLen = valStr.length;
-      }
-      colWidths.push(Math.max(160, Math.min(400, maxLen * 8 + 40)));
-    }
-  }
+  const colWidths = estimateColWidths(headers, rows, viewMode);
 
   const initialIndices: number[] = [];
   for (let i = 0; i < rows.length; i++) initialIndices.push(i);
@@ -285,8 +258,10 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     if (shouldToggle && expandable) {
       const key = expandable.getAttribute('data-expand-key');
       if (key) {
-        if (expandedCells.has(key)) expandedCells.delete(key);
+        const collapsing = expandedCells.has(key);
+        if (collapsing) expandedCells.delete(key);
         else expandedCells.add(key);
+        if (collapsing) resetColWidthsToEstimate(state);
         // 展开/折叠后重测列宽与行高（保留已有 colWidths 作下限）
         state.measured = false;
         state.rowHeights = [];
@@ -461,6 +436,45 @@ function objectArrayHeaders(arr: Record<string, unknown>[]): string[] {
     }
   }
   return headers;
+}
+
+// 折叠态列宽估算：键/值贴内容，展开态实测只会往上加不会往下减
+function estimateColWidths(headers: string[], rows: unknown[], viewMode: 'array' | 'object'): number[] {
+  const colWidths: number[] = [];
+  if (viewMode === 'object') {
+    let maxKeyLen = 0;
+    let maxValLen = 0;
+    for (const row of rows) {
+      const obj = row as { key: string; val: unknown };
+      if (obj.key.length > maxKeyLen) maxKeyLen = obj.key.length;
+      const valStr = collapsedLabelLength(obj.key, obj.val);
+      if (valStr > maxValLen) maxValLen = valStr;
+    }
+    // 键列按最长 key 贴内容，不再用 160 下限把短 key 撑得很宽。
+    // 值列要按折叠标签算（[+] key {}），不能按 summarizeValue 的 {...}，否则 {} 会被折到下一行。
+    colWidths.push(Math.max(48, Math.min(300, maxKeyLen * 8 + 28)));
+    colWidths.push(Math.max(80, Math.min(640, maxValLen * 8 + 36)));
+  } else {
+    colWidths.push(56);
+    for (let h = 1; h < headers.length; h++) {
+      let maxLen = headers[h]?.length || 0;
+      for (const row of rows) {
+        const item = row as Record<string, unknown>;
+        const val = item ? item[headers[h]] : undefined;
+        const valStr = summarizeValue(val);
+        if (valStr.length > maxLen) maxLen = valStr.length;
+      }
+      colWidths.push(Math.max(160, Math.min(400, maxLen * 8 + 40)));
+    }
+  }
+  return colWidths;
+}
+
+// 测量列宽时把已有值当下限（防回落），因此折叠时必须先把 colWidths
+// 重置回折叠估算值，否则展开撑宽的列在收起后永远缩不回去，
+// spacer 维持展开宽度，横向滚动条就一直在。
+function resetColWidthsToEstimate(state: GridState): void {
+  state.colWidths = estimateColWidths(state.headers, state.filteredRows, state.viewMode);
 }
 
 function isExpandable(val: unknown): boolean {
@@ -1180,6 +1194,7 @@ export function expandAll(): void {
 export function collapseAll(): void {
   if (!currentGridState) return;
   currentGridState.expandedCells.clear();
+  resetColWidthsToEstimate(currentGridState);
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
   if (gridRerender) gridRerender();
@@ -1257,6 +1272,7 @@ function applySortAndFilter(state: GridState): void {
   state.rowOriginalIndices = indices;
   state.expandedCells.clear();
   state.selectedNav = null;
+  resetColWidthsToEstimate(state);
   state.measured = false;
   state.rowHeights = [];
 }
@@ -1750,6 +1766,7 @@ export function onCellUpdated(newData: unknown): void {
   currentGridState.sortDirection = null;
   currentGridState.expandedCells.clear();
   currentGridState.selectedNav = null;
+  resetColWidthsToEstimate(currentGridState);
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
   // 编辑改变了数据 → 重算搜索匹配与列头高亮，否则红框/计数停留在旧值上
