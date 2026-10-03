@@ -7,6 +7,43 @@ const OVERSCAN = 5;
 let currentGridState: GridState | null = null;
 let gridRerender: (() => void) | null = null;
 
+// 视口变化时重算框体并重绘可见行。框体是渲染时定死的像素值，不重算的话
+// 拉动窗口后 GRID 不会跟随（左侧 CodeMirror 自带适配，右侧必须自己来）。
+// 项目禁用 ResizeObserver，用 window resize + rAF 节流代替。
+let resizeRaf = 0;
+window.addEventListener('resize', () => {
+  if (!currentGridState || !gridRerender) return;
+  if (resizeRaf) cancelAnimationFrame(resizeRaf);
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = 0;
+    const state = currentGridState;
+    if (!state) return;
+    const wrapper = state.container.parentElement;
+    if (wrapper) syncFrameWidth(wrapper, state.colWidths);
+    gridRerender?.();
+  });
+});
+
+/** 面板级提示（空态/错误）：居中图标 + 标题 + 详情，替代裸 <p> */
+export function renderPanelMessage(
+  container: HTMLElement,
+  kind: 'error' | 'empty',
+  title: string,
+  detail?: string
+): void {
+  // 手绘 SVG：叹号圆圈（错误）/ 信息圆圈（空态），随 currentColor 变色
+  const icon =
+    kind === 'error'
+      ? '<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><line x1="12" y1="7" x2="12" y2="13"/><line x1="12" y1="16.2" x2="12" y2="16.8"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><line x1="12" y1="11" x2="12" y2="16.5"/><line x1="12" y1="7.2" x2="12" y2="7.8"/></svg>';
+  const detailHtml = detail
+    ? `<div class="panel-message__detail">${escHtml(detail)}</div>`
+    : '';
+  container.innerHTML =
+    `<div class="panel-message panel-message--${kind}">${icon}` +
+    `<div class="panel-message__title">${escHtml(title)}</div>${detailHtml}</div>`;
+}
+
 /** 路径段编码：\\ 与 \|，避免键名含 | 时被误切分 */
 function encodePathSegment(seg: string): string {
   return String(seg).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
@@ -77,7 +114,8 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
 
   if (Array.isArray(data)) {
     if (data.length === 0) {
-      container.innerHTML = '<p style="color: var(--text-muted);">空数组</p>';
+      container.innerHTML = '';
+      renderPanelMessage(container, 'empty', '空数组');
       return;
     }
     const keySet = new Set<string>();
@@ -98,7 +136,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     });
     viewMode = 'object';
   } else {
-    container.innerHTML = '<p style="color: var(--text-muted);">JSON 必须是对象或数组</p>';
+    renderPanelMessage(container, 'error', '无法渲染', '顶层必须是对象或数组');
     return;
   }
 
@@ -604,7 +642,12 @@ function syncFrameWidth(wrapper: HTMLElement, colWidths: number[]): void {
   if (parent) {
     const pcs = getComputedStyle(parent);
     const pad = (parseFloat(pcs.paddingTop) || 0) + (parseFloat(pcs.paddingBottom) || 0);
-    avail = Math.max(0, parent.clientHeight - pad);
+    const borderH = (parseFloat(pcs.borderTopWidth) || 0) + (parseFloat(pcs.borderBottomWidth) || 0);
+    // 用边界框高度反推可用高，不能用 clientHeight：上面第 612 行已把 wrapper
+    // 撑到全表宽，父容器（overflow-x:auto）的横向滚动条此刻还在，clientHeight
+    // 会少一个滚动条高度；随后宽度缩回、滚动条消失，但这个高度没人再重算，
+    // 框体就永久矮一截，滚动条下方留下一条空白。
+    avail = Math.max(0, parent.getBoundingClientRect().height - borderH - pad);
   }
   const border = 2;
   let availW = avail;

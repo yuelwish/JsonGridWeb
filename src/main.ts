@@ -6,7 +6,7 @@ import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
-import { renderVirtualGrid, expandAll, collapseAll, exportToCSV, getCellPath, onCellUpdated, decodePathKey, setSearchText, searchStep, getSearchInfo } from './grid';
+import { renderVirtualGrid, renderPanelMessage, expandAll, collapseAll, exportToCSV, getCellPath, onCellUpdated, decodePathKey, setSearchText, searchStep, getSearchInfo } from './grid';
 import { SAMPLE_JSON } from './sample-data';
 
 // ========== Worker 管理 ==========
@@ -85,91 +85,190 @@ function getWorkerCode(): string {
       }
     };
 
+    // 结构化克隆按文档深度递归：深链文档会把克隆器栈打爆，postMessage 直接抛
+    // "Maximum call stack size exceeded"（worker 实测 2000 层已失败、主线程 4000 层
+    // 失败）。超限的解析结果传不回主线程，提前给出明确错误而不是让克隆器炸栈。
+    var CLONE_MAX_DEPTH = 1000;
+
     function parseJSON(s) {
       var t = performance.now();
       var d = JSON.parse(s);
+      // exceedsCompactBudget(v, depthLimit) 就是通用的"嵌套超限"遍历，直接复用
+      if (exceedsCompactBudget(d, CLONE_MAX_DEPTH)) {
+        throw new Error('文档嵌套超过 ' + CLONE_MAX_DEPTH + ' 层，无法渲染到 GRID/树视图');
+      }
       return { data: d, parseTime: performance.now() - t, size: s.length };
     }
 
-    // 紧凑格式化：整行（含缩进与键前缀）不超过 100 列就折叠成一行
+    // 紧凑格式化：整行（含缩进与键前缀）不超过 100 显示列就折叠成一行
+    // （CJK/全角字符按 2 列计，见 displayWidth）。
+    // 两遍式实现：flatWidth 自底向上算每个节点"全折叠时的扁平宽度"（纯数字，
+    // WeakMap 记忆化），emitValue 往行缓冲发射。父节点可折叠则子孙必然可折叠
+    // （子文本是父扁平串的子串），所以折叠判定只需本层宽度之和，不需要像旧实现
+    // 那样每层都先拼出整棵子树的扁平串——O(n×depth) 的字符串拷贝降为 O(输出大小)。
     var COMPACT_WIDTH = 100;
 
-    function repeatSpaces(n) {
-      var s = '';
-      for (var i = 0; i < n; i++) s += '  ';
-      return s;
+    var padCache = [''];
+    function padFor(levels) {
+      while (padCache.length <= levels) padCache.push(padCache[padCache.length - 1] + '  ');
+      return padCache[levels];
     }
 
+    var widthCache = new WeakMap();
+    // 显示列宽：等宽字体下 CJK/全角/emoji 占 2 列，组合字符/零宽字符占 0 列，
+    // 其余按 1 列。纯 ASCII 快路径直接返回长度，避免常规文档付出逐码点扫描。
+    function isWideChar(code) {
+      return (code >= 0x1100 && code <= 0x115F)    // Hangul Jamo
+        || (code >= 0x2E80 && code <= 0x303E)      // CJK 部首、康熙部首
+        || (code >= 0x3041 && code <= 0x33FF)      // 平假名..CJK 兼容符号
+        || (code >= 0x3400 && code <= 0x4DBF)      // CJK 扩展 A
+        || (code >= 0x4E00 && code <= 0x9FFF)      // CJK 基本区
+        || (code >= 0xA000 && code <= 0xA4CF)      // 彝文..谚文兼容
+        || (code >= 0xAC00 && code <= 0xD7A3)      // Hangul 音节
+        || (code >= 0xF900 && code <= 0xFAFF)      // CJK 兼容表意文字
+        || (code >= 0xFE10 && code <= 0xFE19)      // 竖排形式
+        || (code >= 0xFE30 && code <= 0xFE6F)      // CJK 兼容形式
+        || (code >= 0xFF00 && code <= 0xFF60)      // 全角 ASCII 与标点
+        || (code >= 0xFFE0 && code <= 0xFFE6)      // 全角符号
+        || (code >= 0x1F300 && code <= 0x1FAFF)    // emoji（等宽下普遍双列）
+        || (code >= 0x20000 && code <= 0x3FFFD);   // CJK 扩展 B–F
+    }
+    function isZeroWidthChar(code) {
+      return (code >= 0x0300 && code <= 0x036F)    // 组合附加符号
+        || (code >= 0x200B && code <= 0x200F)      // 零宽空格与方向标记
+        || (code >= 0xFE00 && code <= 0xFE0F);     // 变体选择符
+    }
+    function displayWidth(s) {
+      var n = s.length;
+      var i = 0;
+      while (i < n && s.charCodeAt(i) <= 0x7F) i++;
+      if (i >= n) return n;
+      var w = i;
+      while (i < n) {
+        var c = s.charCodeAt(i);
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) { w += 2; i += 2; continue; }
+        i++;
+        w += isWideChar(c) ? 2 : isZeroWidthChar(c) ? 0 : 1;
+      }
+      return w;
+    }
+    // 返回该节点全部折叠成一行的显示列宽
+    function flatWidth(v) {
+      if (v === null || typeof v !== 'object') return displayWidth(JSON.stringify(v));
+      var cached = widthCache.get(v);
+      if (cached !== undefined) return cached;
+      var isArr = Array.isArray(v);
+      var keys = isArr ? null : Object.keys(v);
+      var n = isArr ? v.length : keys.length;
+      var w = 2;
+      var i;
+      for (i = 0; i < n; i++) {
+        if (i > 0) w += 2;
+        if (isArr) w += flatWidth(v[i]);
+        else w += displayWidth(JSON.stringify(keys[i])) + 2 + flatWidth(v[keys[i]]);
+      }
+      widthCache.set(v, w);
+      return w;
+    }
+
+    var outLines = [];
+    var lineBuf = '';
+    function flushLine() { outLines.push(lineBuf); lineBuf = ''; }
+
     // indent = 当前值所在行的缩进层级；col = 该值文本在本行的起始列
-    function compactValue(v, indent, col) {
-      if (v === null || typeof v !== 'object') return JSON.stringify(v);
+    function emitValue(v, indent, col) {
+      if (v === null || typeof v !== 'object') { lineBuf += JSON.stringify(v); return; }
 
       var isArr = Array.isArray(v);
       var keys = isArr ? null : Object.keys(v);
       var n = isArr ? v.length : keys.length;
-      if (n === 0) return isArr ? '[]' : '{}';
+      if (n === 0) { lineBuf += isArr ? '[]' : '{}'; return; }
 
-      var items = [];
-      var i, k, keyText;
+      var flatLen = 2;
+      var i, keyLen;
       for (i = 0; i < n; i++) {
-        k = isArr ? null : keys[i];
-        keyText = k === null ? '' : JSON.stringify(k) + ': ';
-        items.push({
-          keyText: keyText,
-          text: compactValue(isArr ? v[i] : v[k], indent + 1, (indent + 1) * 2 + keyText.length)
-        });
+        if (i > 0) flatLen += 2;
+        keyLen = isArr ? 0 : displayWidth(JSON.stringify(keys[i])) + 2;
+        flatLen += keyLen + flatWidth(isArr ? v[i] : v[keys[i]]);
       }
+      // 本行装得下整个扁平串（此时子孙必然也装得下）就整棵折叠
+      if (col + flatLen <= COMPACT_WIDTH) { emitFlat(v, isArr, keys, n); return; }
 
-      var flat = isArr ? '[' : '{';
-      for (i = 0; i < items.length; i++) {
-        if (i > 0) flat += ', ';
-        flat += items[i].keyText + items[i].text;
+      lineBuf += isArr ? '[' : '{';
+      flushLine();
+      var padItem = padFor(indent + 1);
+      for (i = 0; i < n; i++) {
+        keyLen = isArr ? 0 : displayWidth(JSON.stringify(keys[i])) + 2;
+        lineBuf += padItem + (isArr ? '' : JSON.stringify(keys[i]) + ': ');
+        emitValue(isArr ? v[i] : v[keys[i]], indent + 1, (indent + 1) * 2 + keyLen);
+        if (i < n - 1) lineBuf += ',';
+        flushLine();
       }
-      flat += isArr ? ']' : '}';
-
-      // 任一子节点已换行就不能折叠；本行放得下才折叠
-      if (flat.indexOf('\\n') < 0 && col + flat.length <= COMPACT_WIDTH) return flat;
-
-      var pad = repeatSpaces(indent + 1);
-      var out = (isArr ? '[' : '{') + '\\n';
-      for (i = 0; i < items.length; i++) {
-        out += pad + items[i].keyText + items[i].text;
-        if (i < items.length - 1) out += ',';
-        out += '\\n';
-      }
-      out += repeatSpaces(indent) + (isArr ? ']' : '}');
-      return out;
+      lineBuf += padFor(indent) + (isArr ? ']' : '}');
     }
 
-    // 紧凑路径每层都要拼一次整棵子树的扁平串，链式嵌套下是 O(深度²)：
-    // 实测深度 1000 需 10s、2000 跑不完，会把 Worker 占死导致后续请求全排队。
-    // 超过阈值直接回退原生 JSON.stringify（同样深度只需毫秒级）。
-    var COMPACT_MAX_DEPTH = 200;
+    // 仅在整棵子树确认可折叠后调用；折叠子树总宽 ≤ 100 列，直接拼串代价可忽略
+    function emitFlat(v, isArr, keys, n) {
+      lineBuf += isArr ? '[' : '{';
+      for (var i = 0; i < n; i++) {
+        if (i > 0) lineBuf += ', ';
+        if (!isArr) lineBuf += JSON.stringify(keys[i]) + ': ';
+        var c = isArr ? v[i] : v[keys[i]];
+        if (c !== null && typeof c === 'object') {
+          var ca = Array.isArray(c);
+          var ck = ca ? null : Object.keys(c);
+          emitFlat(c, ca, ck, ca ? c.length : ck.length);
+        } else {
+          lineBuf += JSON.stringify(c);
+        }
+      }
+      lineBuf += isArr ? ']' : '}';
+    }
 
-    function exceedsDepth(v, depth) {
-      if (depth > COMPACT_MAX_DEPTH) return true;
+    function compactDocument(d) {
+      outLines = [];
+      lineBuf = '';
+      emitValue(d, 0, 0);
+      flushLine();
+      return outLines.join('\\n');
+    }
+
+    // 回退守卫管两件事：
+    // 1) 调用栈安全——上面的 walk/flatWidth/emitValue 都按文档深度递归，深度上限
+    //    要留足余量（实测 V8 数千层才栈溢出，1500 有 3 倍以上余量）；
+    // 2) 时间预算——两遍式已是 O(输出大小)，但超大文档的紧凑输出本身可达输入的
+    //    4~5 倍，depth×size 超预算时回退原生 stringify（毫秒级）更划算。
+    //    注意预算按深度加权：深文档约 1 秒级触发回退，浅而大的文档放行更宽
+    //    （如 15MB/深3 实测 1.2s）——若需更紧，后续可加绝对体积上限。
+    var COMPACT_MAX_DEPTH = 1500;
+    var COMPACT_COST_BUDGET = 250000000;
+
+    // depthLimit = 允许的最大嵌套层数，超了立即返回 true（栈深度也以此为界）
+    function exceedsCompactBudget(v, depthLimit) {
       if (v === null || typeof v !== 'object') return false;
+      if (depthLimit < 1) return true;
       if (Array.isArray(v)) {
         for (var i = 0; i < v.length; i++) {
-          if (exceedsDepth(v[i], depth + 1)) return true;
+          if (exceedsCompactBudget(v[i], depthLimit - 1)) return true;
         }
         return false;
       }
       var keys = Object.keys(v);
       for (var k = 0; k < keys.length; k++) {
         // 注意：必须用 keys[k] 取值，用下标 k 会拿到 undefined
-        if (exceedsDepth(v[keys[k]], depth + 1)) return true;
+        if (exceedsCompactBudget(v[keys[k]], depthLimit - 1)) return true;
       }
       return false;
     }
 
     function formatJSON(p) {
-      var s = typeof p === 'string' ? p : p.text;
-      var wantCompact = typeof p === 'string' ? false : !!p.compact;
+      var s = p.text;
+      var wantCompact = !!p.compact;
       var t = performance.now();
       var d = JSON.parse(s);
-      var compact = wantCompact && !exceedsDepth(d, 0);
-      var r = compact ? compactValue(d, 0, 0) : JSON.stringify(d, null, 2);
+      var depthLimit = Math.min(COMPACT_MAX_DEPTH, Math.floor(COMPACT_COST_BUDGET / Math.max(s.length, 1)));
+      var compact = wantCompact && !exceedsCompactBudget(d, depthLimit);
+      var r = compact ? compactDocument(d) : JSON.stringify(d, null, 2);
       return { result: r, processTime: performance.now() - t, originalSize: s.length, formattedSize: r.length, compact: compact };
     }
 
@@ -650,7 +749,7 @@ function initEditors() {
 function updateStats() {
   const content = inputEditor.state.doc.toString();
   const el = document.getElementById('left-stats');
-  if (el) el.textContent = `输入: ${content.length} 字符 | ${content.split('\n').length} 行`;
+  if (el) el.textContent = `${content.length} 字符 · ${content.split('\n').length} 行`;
 }
 
 /**
@@ -877,15 +976,15 @@ async function runFormat(quietIfEmpty = false) {
     return;
   }
   try {
-    setStatus('格式化中...');
+    setStatus('格式化中…');
     const result = await workerRequest('format', { text: input, compact: compactFormat });
     autoFormatting = true;
     inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
     updateStats();
     autoFormatting = false;
-    // compactFormat 是开关状态，result.compact 是实际是否走了紧凑（深层嵌套会回退）
-    const modeNote = compactFormat && !result.compact ? ' (层级过深，已展开)' : result.compact ? ' (紧凑)' : '';
-    setStatus(`格式化完成${modeNote} (${fmtMs(result.processTime)}ms)`, 'success');
+    // compactFormat 是开关状态，result.compact 是实际是否走了紧凑（超预算/过深会回退）
+    const modeNote = compactFormat && !result.compact ? ' · 已展开' : result.compact ? ' · 紧凑' : '';
+    setStatus(`格式化 ${fmtMs(result.processTime)}ms${modeNote}`, 'success');
   } catch (err: any) {
     setStatus(`格式化失败: ${err.message}`, 'error');
     if (err.line) highlightError(err.line, err.col || 0);
@@ -940,16 +1039,16 @@ function initURLParams() {
         changes: { from: 0, to: inputEditor.state.doc.length, insert: decoded }
       });
       updateStats();
-      setStatus('已从 URL 加载 JSON', 'success');
+      setStatus('URL JSON 已加载', 'success');
     } catch (err) {
-      setStatus('URL 参数解析失败', 'error');
+      setStatus('URL JSON 解析失败', 'error');
     }
     return;
   }
 
   const urlParam = params.get('url');
   if (urlParam) {
-    setStatus('正在从 URL 加载...');
+    setStatus('URL 加载中…');
     fetch(urlParam)
       .then(r => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -960,7 +1059,7 @@ function initURLParams() {
           changes: { from: 0, to: inputEditor.state.doc.length, insert: text }
         });
         updateStats();
-        setStatus('已从远程 URL 加载', 'success');
+        setStatus('URL 已加载', 'success');
       })
       .catch(err => setStatus('URL 加载失败: ' + err.message, 'error'));
   }
@@ -1034,21 +1133,25 @@ function setLayout(mode: LayoutMode) {
   applyLayout();
 }
 
-async function renderGridView() {
+/** 按当前模式（紧凑/全量）把编辑器内容渲染到 GRID；返回渲染结果供状态栏使用 */
+async function renderGridView(): Promise<{ ok: boolean; error?: string }> {
    const input = inputEditor.state.doc.toString();
+   const gridView = document.getElementById('grid-view')!;
    if (!input.trim()) {
-     document.getElementById('grid-view')!.innerHTML = '<p style="color: var(--text-muted);">请输入 JSON 数据</p>';
-     return;
+     renderPanelMessage(gridView, 'empty', '暂无数据', '输入 JSON 后渲染到 GRID');
+     return { ok: false, error: '内容为空' };
    }
    try {
      const result = await workerRequest('parse', input);
-     renderVirtualGrid(result.data, document.getElementById('grid-view')!);
+     renderVirtualGrid(result.data, gridView);
+     return { ok: true };
    } catch (err: any) {
-     document.getElementById('grid-view')!.innerHTML = `<p style="color: var(--error-color);">解析失败: ${err.message}</p>`;
+     renderPanelMessage(gridView, 'error', '无法渲染', err.message);
      // 如果有位置信息，定位到错误位置
      if (err.line && err.col) {
        highlightError(err.line, err.col);
      }
+     return { ok: false, error: err.message };
    }
  }
  
@@ -1061,13 +1164,13 @@ function setupEventListeners() {
     const input = inputEditor.state.doc.toString();
     if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
     try {
-      setStatus('压缩中...');
+      setStatus('压缩中…');
       const result = await workerRequest('compress', input);
       autoFormatting = true;
       inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
       updateStats();
       autoFormatting = false;
-      setStatus(`压缩完成，节省 ${(result.saved / 1024).toFixed(2)} KB`, 'success');
+      setStatus(`压缩 ${fmtMs(result.processTime)}ms · 节省 ${(result.saved / 1024).toFixed(2)} KB`, 'success');
     } catch (err: any) {
       setStatus(`压缩失败: ${err.message}`, 'error');
       if (err.line) highlightError(err.line, err.col || 0);
@@ -1077,16 +1180,16 @@ function setupEventListeners() {
   // Sample：加载原站样例并格式化
   document.getElementById('btn-sample')?.addEventListener('click', async () => {
     try {
-      setStatus('加载样例...');
+      setStatus('加载示例…');
       const result = await workerRequest('format', { text: SAMPLE_JSON, compact: compactFormat });
       autoFormatting = true;
       inputEditor.dispatch({ changes: { from: 0, to: inputEditor.state.doc.length, insert: result.result } });
       updateStats();
       autoFormatting = false;
-      setStatus(`样例已加载 (${(result.processTime || 0).toFixed(3)}ms)`, 'success');
+      setStatus(`示例已加载 · ${fmtMs(result.processTime || 0)}ms`, 'success');
       if (layoutMode !== 'json-full') renderGridView();
     } catch (err: any) {
-      setStatus(`样例加载失败: ${err.message}`, 'error');
+      setStatus(`示例加载失败: ${err.message}`, 'error');
     }
   });
 
@@ -1095,12 +1198,12 @@ function setupEventListeners() {
     const input = inputEditor.state.doc.toString();
     if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
     try {
-      setStatus('校验中...');
+      setStatus('校验中…');
       const result = await workerRequest('validate', input);
       if (result.valid) {
-        setStatus(`JSON 有效 (${fmtMs(result.validateTime)}ms)`, 'success');
+        setStatus(`校验通过 · ${fmtMs(result.validateTime)}ms`, 'success');
       } else {
-        setStatus(`JSON 无效: ${result.error}（第 ${result.line} 行，第 ${(result.col || 0) + 1} 列）`, 'error');
+        setStatus(`第 ${result.line} 行第 ${(result.col || 0) + 1} 列: ${result.error}`, 'error');
         highlightError(result.line, result.col || 0);
       }
     } catch (err: any) {
@@ -1139,7 +1242,7 @@ function setupEventListeners() {
      const input = inputEditor.state.doc.toString();
      if (!input.trim()) { setStatus('请输入 JSON', 'error'); return; }
      try {
-       setStatus('渲染中...');
+       setStatus('渲染中…');
        const result = await workerRequest('format', { text: input, compact: compactFormat });
        if (result.result !== input) {
          autoFormatting = true;
@@ -1147,8 +1250,9 @@ function setupEventListeners() {
          updateStats();
          autoFormatting = false;
        }
-       renderGridView();
-       setStatus(`已渲染到 GRID (${fmtMs(result.processTime)}ms)`, 'success');
+       const r = await renderGridView();
+       if (r.ok) setStatus(`GRID 已渲染 · ${fmtMs(result.processTime)}ms`, 'success');
+       else setStatus(`渲染失败: ${r.error}`, 'error');
      } catch (err: any) {
        setStatus(`渲染失败: ${err.message}`, 'error');
        if (err.line) highlightError(err.line, err.col || 0);
@@ -1314,17 +1418,17 @@ function setupEventListeners() {
     let parsedValue: unknown = newValue;
     if (typeof oldValue === 'number') {
       const n = Number(newValue);
-      if (isNaN(n)) { setStatus('数字格式无效，未更新', 'error'); return; }
+      if (isNaN(n)) { setStatus('无效数字，未更新', 'error'); return; }
       parsedValue = n;
     } else if (typeof oldValue === 'boolean') {
       const lower = newValue.toLowerCase();
-      if (lower !== 'true' && lower !== 'false') { setStatus('布尔值需为 true/false，未更新', 'error'); return; }
+      if (lower !== 'true' && lower !== 'false') { setStatus('需 true/false，未更新', 'error'); return; }
       parsedValue = lower === 'true';
     } else if (oldValue === null) {
       parsedValue = newValue === 'null' ? null : newValue;
     }
     try {
-      setStatus('更新中...');
+      setStatus('更新中…');
       const input = inputEditor.state.doc.toString();
       const parseResult = await workerRequest('parse', input);
       const updateResult = await workerRequest('updateCell', {
@@ -1337,7 +1441,7 @@ function setupEventListeners() {
       updateStats();
       autoFormatting = false;
       renderGridView();
-      setStatus(`已更新 (${fmtMs(updateResult.updateTime)}ms)`, 'success');
+      setStatus(`已更新 · ${fmtMs(updateResult.updateTime)}ms`, 'success');
     } catch (err: any) {
       setStatus(`更新失败: ${err.message}`, 'error');
     }
@@ -1350,7 +1454,7 @@ function setupEventListeners() {
     if (!path) return;
 
     try {
-      setStatus('更新中...');
+      setStatus('更新中…');
       // 获取当前数据
       const input = inputEditor.state.doc.toString();
       const parseResult = await workerRequest('parse', input);
@@ -1369,7 +1473,7 @@ function setupEventListeners() {
       autoFormatting = false;
       // 更新 Grid
       onCellUpdated(updateResult.data);
-      setStatus(`已更新 (${fmtMs(updateResult.updateTime)}ms)`, 'success');
+      setStatus(`已更新 · ${fmtMs(updateResult.updateTime)}ms`, 'success');
     } catch (err: any) {
       setStatus(`更新失败: ${err.message}`, 'error');
     }
@@ -1406,7 +1510,7 @@ function setupEventListeners() {
       if (gen !== navGen) return;
       applyNavHighlight(result.from, result.to);
       setStatus(
-        '已定位 ' + detail.path.join('.') + ' (' + result.locateTime.toFixed(1) + 'ms)',
+        '已定位 ' + detail.path.join('.') + ' · ' + result.locateTime.toFixed(1) + 'ms',
         'success'
       );
     } catch (err: any) {

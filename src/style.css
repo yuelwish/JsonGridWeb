@@ -471,8 +471,9 @@ body {
   flex: 1;
   overflow-x: auto;
   overflow-y: hidden;
-  /* 源站 .grid-body padding:10px，表格不贴边 */
-  padding: 10px;
+  /* 源站 .grid-body padding:10px，表格不贴边；底部不留 padding——
+     滚动区要一直延伸到底栏，内容没滑完时底部不能出现静态留白 */
+  padding: 10px 10px 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -591,6 +592,51 @@ body {
   margin-left: auto;
   padding: 0 1rem;
   text-align: right;
+}
+
+/* 面板级提示（空态/错误）：居中图标 + 标题 + 详情，替代裸 <p> */
+.panel-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.panel-message svg {
+  opacity: 0.75;
+}
+
+.panel-message__title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.panel-message__detail {
+  font-size: 0.75rem;
+  line-height: 1.6;
+  max-width: 420px;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.panel-message--error {
+  color: var(--error-color);
+}
+
+.panel-message--error .panel-message__title {
+  color: var(--error-color);
+}
+
+.panel-message--error .panel-message__detail {
+  color: var(--text-muted);
 }
 
 /* CodeMirror 编辑器 */
@@ -1205,7 +1251,7 @@ body {
   min-width: max-content;
 }
 
-/* 数据行：原站行高 38px，展开嵌套 table 后可增高 */
+/* 数据行：原站行高 38px，展开嵌套 table 后可增高；全白底无斑马纹（亮/暗均实测） */
 .grid-row {
   display: flex;
   align-items: stretch;
@@ -1216,11 +1262,6 @@ body {
   min-width: max-content;
   min-height: 38px;
   height: auto;
-}
-
-/* 交替行色：偶数行略深 */
-.grid-row:nth-child(even) {
-  background: var(--bg-color);
 }
 
 .grid-row:hover {
@@ -1399,10 +1440,6 @@ body {
   background: var(--bg-color);
 }
 
-[data-theme="dark"] .grid-row:nth-child(even) {
-  background: var(--bg-color);
-}
-
 [data-theme="dark"] .grid-row:hover {
   background: #1e293b;
   box-shadow: inset 0 0 0 1px #475569;
@@ -1428,15 +1465,14 @@ body {
   background: var(--hover-color);
 }
 
-/* 子表头：源站 key 行浅灰填充，保留原始大小写 */
+/* 子表头：源站 th.oah 实测 #F1F1F1 底 / #234A97 字 / 0.8px #EDEDED 边框 / 4px 5px 内边距 */
 .grid-subheader-cell {
   font-size: 13px;
   color: #234a97;
   font-weight: 500;
   letter-spacing: 0;
-  padding: 6px 8px;
-  background: #ececec;
-  border-bottom: 2px solid #c5c5c5 !important;
+  padding: 4px 5px;
+  background: #f1f1f1;
 }
 
 .nsh {
@@ -1503,57 +1539,41 @@ body {
   border-color: #555;
 }
 
+/* 展开容器：源站 app-grid-editor 无边框无灰底，框只由嵌套表自身的 0.8px 外边框承担 */
 [data-theme="dark"] .cell-expandable.is-open {
   background: #3a3a3a;
-  border-color: #777;
 }
 
-/* 嵌套表格 - 1:1 复刻 jsongrid.com：table-in-cell，无 margin 缩进 */
+/* 嵌套表格 - 源站实测：0.8px #C5C5C5 单层外框，无标题外框，格线 0.8px #EDEDED。
+   无 margin：标题与表格的 5px 间距由 .plus-minus 的 margin-bottom 提供（同源站）。 */
 .nested-grid-table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0; /* 盖掉 UA 表格默认的 2px 格距 */
   width: max-content;
-  margin-top: 4px;
-  margin-left: 0;
-  margin-right: 0;
-  background: #f4f4f4;
-  border: 2px solid #c5c5c5;
+  border: 0.8px solid #c5c5c5;
 }
 
 .nested-grid-table td {
-  border: 1px solid #d0d0d0;
-  padding: 4px 8px;
+  border: 0.8px solid #ededed;
+  padding: 4px 5px;
   font-size: 13.5px;
   white-space: nowrap;
   vertical-align: top;
-  background: #fff;
+  background: transparent;
 }
 
-/* 特异性要比 .nested-grid-table .op 的 background:transparent 高一档，
-   否则表头灰底会被同特异性的 .op 规则盖掉。 */
+/* 特异性要比 .nested-grid-table td 的 background:transparent 高一档，
+   否则表头灰底会被同特异性的 td 规则盖掉。 */
 .nested-grid-table td.grid-subheader-cell {
-  background: #ececec;
-}
-
-/* 展开后的区域：灰底 + 加粗边框，贴近源站嵌套块 */
-.cell-expandable.is-open {
-  background: #f3f3f3;
-  border: 2px solid #c5c5c5;
-  padding: 4px 6px;
-  box-sizing: border-box;
+  background: #f1f1f1;
 }
 
 .nested-grid-table .op {
-  font-weight: 500;
   color: #234a97;
-  background: transparent;
-  width: auto;
-  padding-left: 5px;
 }
 
 .nested-grid-table .ov {
-  color: var(--text-color);
   min-width: 60px;
-  padding-left: 5px;
 }
 
 .nested-grid-table .nested-missing {
