@@ -941,9 +941,10 @@ function customizeSearchPanel() {
 /**
  * 编辑器搜索的唯一入口：打开搜索面板并完成定制。
  *
- * 工具栏「搜索」按钮与 Ctrl+F / Cmd+F 共用本函数，两者因此不可能漂移出
- * 两副面孔。之前两者各写一遍 openSearchPanel + customizeSearchPanel，快捷键
- * 那条漏了 customize，于是弹出未定制的原生面板（issue #1）。
+ * 工具栏「搜索」按钮与 Ctrl+F / Cmd+F 共用本函数。定制逻辑原本只写在按钮的
+ * click 处理器里，而快捷键走的是 basicSetup 内置的 Mod-f -> openSearchPanel，
+ * 绕过了定制，于是弹出原生面板（issue #1）。抽成本函数后两条路径同源，
+ * 不再可能漂移出两副面孔。
  */
 function openEditorSearch() {
   openSearchPanel(inputEditor);
@@ -1239,7 +1240,7 @@ function setupEventListeners() {
     setStatus('已清空');
   });
 
-  // 搜索：打开 CodeMirror 内置搜索面板（原站 Search 按钮同款行为）
+  // 搜索：打开定制后的编辑器搜索面板（原站 Ace searchbox 同款）
   document.getElementById('btn-search')?.addEventListener('click', () => {
     openEditorSearch();
   });
