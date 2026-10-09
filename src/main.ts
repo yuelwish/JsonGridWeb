@@ -1,7 +1,7 @@
 import './style.css';
 import { EditorView, basicSetup } from 'codemirror';
 import { openSearchPanel } from '@codemirror/search';
-import { Decoration, ViewPlugin } from '@codemirror/view';
+import { Decoration, ViewPlugin, keymap } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
@@ -718,6 +718,12 @@ function initEditors() {
     // 页面打开不带任何内容；默认数据由「样例」按钮按需注入（见 sample-data.ts）
     doc: '',
     extensions: [
+      // Ctrl+F / Cmd+F 必须打开**定制**后的搜索面板，与工具栏「搜索」按钮同一副面孔。
+      // basicSetup 内置了 Mod-f -> openSearchPanel，它打开的是未定制的 CodeMirror
+      // 原生面板（跳过 customizeSearchPanel），这就是 issue #1 的成因。
+      // CM6 的 keymap facet 按扩展顺序合并、先声明者先命中，所以这条必须排在
+      // basicSetup 之前；scripts/verify-search-keymap.mjs 会守住这个次序。
+      keymap.of([{ key: 'Mod-f', run: () => { openEditorSearch(); return true; } }]),
       basicSetup,
       json(),
       syntaxHighlighting(originalSiteHighlight),
@@ -930,6 +936,18 @@ function customizeSearchPanel() {
   });
   // CM 渲染搜索高亮是新增装饰 span（childList）+ class 标记，两类都要监听
   searchPanelObserver.observe(document.getElementById('editor-container')!, { subtree: true, attributes: true, attributeFilter: ['class'], childList: true });
+}
+
+/**
+ * 编辑器搜索的唯一入口：打开搜索面板并完成定制。
+ *
+ * 工具栏「搜索」按钮与 Ctrl+F / Cmd+F 共用本函数，两者因此不可能漂移出
+ * 两副面孔。之前两者各写一遍 openSearchPanel + customizeSearchPanel，快捷键
+ * 那条漏了 customize，于是弹出未定制的原生面板（issue #1）。
+ */
+function openEditorSearch() {
+  openSearchPanel(inputEditor);
+  customizeSearchPanel();
 }
 
 // ========== 主题切换 ==========
@@ -1223,8 +1241,7 @@ function setupEventListeners() {
 
   // 搜索：打开 CodeMirror 内置搜索面板（原站 Search 按钮同款行为）
   document.getElementById('btn-search')?.addEventListener('click', () => {
-    openSearchPanel(inputEditor);
-    customizeSearchPanel();
+    openEditorSearch();
   });
 
    // 分隔条底部两个钮的含义随布局变，见 applyLayout 里的 title
