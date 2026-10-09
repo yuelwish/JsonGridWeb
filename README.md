@@ -30,7 +30,7 @@
 
 ### 技术特点
 
-- **单文件产物**：`vite-plugin-singlefile` 把 JS / CSS 全部内联，产物只有一个 `index.html`，约 **517 kB**（gzip **164 kB**），可直接丢到任意静态服务器或用浏览器打开
+- **单文件产物**：`vite-plugin-singlefile` 把 JS / CSS 全部内联，产物只有一个 `index.html`，约 **526 kB**（gzip **169 kB**），可直接丢到任意静态服务器或用浏览器打开
 - **零后端**：没有服务端、没有数据库、没有构建期数据请求
 - **Worker 承担全部 JSON 计算**：解析、格式化、压缩、校验、搜索、单元格更新都在 Web Worker 中，主线程只做渲染
 - **紧凑格式化的深度守卫**：紧凑路径每层需拼接整棵子树的扁平串，链式嵌套下是 O(深度²)。超过 **200 层**自动回退原生序列化（状态栏标注「层级过深，已展开」），避免占死 Worker
@@ -94,7 +94,7 @@ Turn a wall of JSON text into a table you can click, search and export. Every co
 
 ### Technical highlights
 
-- **Single-file build** — `vite-plugin-singlefile` inlines all JS and CSS, producing one `index.html` at roughly **517 kB** (**164 kB** gzipped). Drop it on any static host, or just open it in a browser
+- **Single-file build** — `vite-plugin-singlefile` inlines all JS and CSS, producing one `index.html` at roughly **526 kB** (**169 kB** gzipped). Drop it on any static host, or just open it in a browser
 - **Zero backend** — no server, no database, no build-time data fetching
 - **All JSON work in a Web Worker** — parse, format, minify, validate, search and cell updates happen off the main thread
 - **Depth guard for compact formatting** — the compact path concatenates a flat string per level, which is O(depth²) for deeply nested chains. Past **200 levels** it falls back to native serialization (the status bar reports "层级过深，已展开") so the Worker never hangs

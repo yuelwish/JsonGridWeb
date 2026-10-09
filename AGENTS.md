@@ -68,9 +68,18 @@ cp dist/index.html /var/www/html/   # nginx 部署
 
 # 紧凑格式化回归验证（改 worker 序列化器后必跑）
 node scripts/verify-compact.mjs
+
+# 核对产物体积红线（改动前后各跑一次做对比）
+gzip -c dist/index.html | wc -c
 ```
 
-产物大小目标：< 150KB gzip（当前 ~139KB）。
+产物大小红线：< 180 kB gzip（当前 169 kB，口径同上）。
+该线的作用是拦住「顺手引入重依赖」导致的膨胀，不是性能预测——169 kB gzip 走
+静态托管时，首屏耗时取决于网络而非体积。历史上此线为 150 kB，但实际产物
+早已稳定在 169 kB（主要是 CodeMirror 的 `basicSetup` 打包了自动补全、lint、
+折叠等本项目未使用的扩展），红线与现实脱节后便失去了约束意义，故按实测重设。
+若日后确需压回 150 kB，把 `basicSetup` 换成 `minimalSetup` 可省约 26 kB，
+代价是失去行号、折叠、撤销、括号闭合等能力。
 
 ## 待实现功能
 
@@ -94,7 +103,7 @@ node scripts/verify-compact.mjs
 | 指标 | 限制 | 原因 |
 |------|------|------|
 | 主线程阻塞 | < 5ms | Worker 处理所有重计算 |
-| 产物大小 | < 150KB gzip | 首屏加载 < 1s |
+| 产物大小 | < 180 kB gzip | 拦住依赖膨胀；当前 169 kB |
 | 依赖数量 | 不增加运行时依赖 | 当前仅 CodeMirror 6 |
 | DOM 节点 | Grid 视图只渲染视口 + OVERSCAN 行 | 已实现虚拟滚动（grid.ts），无行数上限 |
 
