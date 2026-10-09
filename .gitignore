@@ -19,3 +19,21 @@ dist/
 # 日志与 CI 发 Release 时生成的打包产物
 *.log
 *.zip
+
+# 防止各种AI产物自动添加
+.*
+*.md
+*.yaml
+
+# 例外：Agent skills 与领域文档是工程约定产物，必须入库
+# （否则 docs/agents/、GLOSSARY.md、spec、AGENTS.md 全部无法入库，下次会话读不到）
+!AGENTS.md
+!CLAUDE.md
+!docs/agents/
+!docs/agents/*.md
+!docs/specs/
+!docs/specs/*.md
+!docs/adr/
+!docs/adr/*.md
+!GLOSSARY.md
+!GLOSSARY-MAP.md
