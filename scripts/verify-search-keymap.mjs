@@ -125,6 +125,21 @@ check(
   '存在绕过面板定制的第三个入口。'
 );
 
+// —— 6. 面板定位必须同步，不得用 requestAnimationFrame 延后 ——
+// 定位靠读 editor 的 getBoundingClientRect() 并写 .cm-panels 的 inline style。
+// 若包在 rAF 里，面板会先以 CM 默认的 sticky + bottom:0 渲染一帧（贴编辑器
+// 底部、窄），下一帧才跳到右上角，位置与宽度突变。实测浏览器里表现为
+// 「面板先在底部闪一下再弹到右上角」，快捷键路径尤其明显。
+// 此刻 DOM 重组已完成、panel 已在文档中，量测可同步进行，无需等帧。
+const rafPositions = (mainTs.match(/requestAnimationFrame/g) || []).length;
+check(
+  '面板定位未被 requestAnimationFrame 延后（避免先贴底部再跳位）',
+  rafPositions === 0,
+  `src/main.ts 中发现 ${rafPositions} 处 requestAnimationFrame。` +
+  '面板定位必须同步执行，否则会出现「先以 CM 默认 sticky 定位渲染一帧、' +
+  '再跳到右上角」的位置突变闪烁。'
+);
+
 // —— 报告 ——
 if (failures.length > 0) {
   console.error('搜索快捷键回归验证失败：\n');
@@ -138,5 +153,6 @@ console.log('  - Mod-f 绑定存在且早于 basicSetup');
 console.log('  - 绑定触发面板定制');
 console.log('  - 打开与定制逻辑单点定义，快捷键与按钮共用');
 console.log('  - 共享入口之外无绕过定制的入口');
+console.log('  - 面板定位同步执行，无 rAF 延后导致的跳位闪烁');
 console.log('\n注意：本脚本是源码层代理断言，无法证明浏览器行为。');
 console.log('面板实际外观与按键生效仍需按 issue #1 的人工验收清单确认。');

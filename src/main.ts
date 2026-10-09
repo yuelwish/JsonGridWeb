@@ -896,11 +896,16 @@ function customizeSearchPanel() {
 
   // 面板定位：贴 JSON 编辑器内容区右上角（顶部齐平、右缘齐平），宽度收缩到内容自然宽
   // （原站 ace_search.right 是 right:0 锚定 + shrink-to-fit，约 371px，不是通栏）。
-  // CM 异步渲染面板，双 rAF 等 DOM 稳定后再量。
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const panels = panel.closest('.cm-panels') as HTMLElement | null;
-    const editor = document.getElementById('editor-container');
-    if (!panels || !editor) return;
+  //
+  // 必须**同步**定位，不能等 rAF：此刻 DOM 重组已完成，panel 已在文档里，
+  // getBoundingClientRect() 立即可测。若延后到 rAF，面板会先以 CM 默认的
+  // sticky + bottom:0 渲染一帧（贴编辑器底部、窄 90px），下一帧才跳到
+  // 右上角——位置与宽度突变，在浏览器里表现为「面板先在底部闪一下再弹到
+  // 右上角」。快捷键路径尤其明显，因为按键本该是瞬时响应，人对位置突变
+  // 更敏感。实测两条路径（按钮 / Ctrl+F）都会闪，故在此一并修掉。
+  const panels = panel.closest('.cm-panels') as HTMLElement | null;
+  const editor = document.getElementById('editor-container');
+  if (panels && editor) {
     const er = editor.getBoundingClientRect();
     panels.style.position = 'fixed';
     panels.style.top = Math.round(er.top) + 'px';
@@ -909,7 +914,7 @@ function customizeSearchPanel() {
     const pw = panel.getBoundingClientRect().width || 376;
     panels.style.left = Math.max(0, Math.round(er.right - pw)) + 'px';
     panels.style.zIndex = '99';
-  }));
+  }
 
   // 计数器与无匹配红框：监听编辑器匹配高亮变化（节流，避免滚动重绘风暴）
   if (searchPanelObserver) searchPanelObserver.disconnect();
