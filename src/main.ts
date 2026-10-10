@@ -791,6 +791,47 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
  */
 let searchPanelObserver: MutationObserver | null = null;
 
+/**
+ * 测量浏览器垂直滚动条宽度（标准方法：创建溢出 div，测 offsetWidth - clientWidth）。
+ * 某些系统（Linux overlay 滚动条）的 offsetWidth - clientWidth 返回 0，
+ * 即使滚动条可见。此时回退到 15px 经验值。
+ */
+function measureScrollbarWidth(): number {
+  const div = document.createElement('div');
+  div.style.cssText = 'position:absolute;top:-9999px;width:50px;height:50px;overflow:scroll;';
+  document.body.appendChild(div);
+  const w = div.offsetWidth - div.clientWidth;
+  document.body.removeChild(div);
+  return w > 0 ? w : 15;
+}
+
+// 模块加载时测量一次，滚动条宽度在会话期间基本不变
+const SCROLLBAR_WIDTH = measureScrollbarWidth();
+
+/**
+ * 定位编辑器搜索面板：悬浮于 JSON 编辑器内容区右上角。
+ *
+ * 样式对齐原站 Ace searchbox（背景、边框、圆角、按钮、间距），
+ * 但右缘锚定内容区右缘（right = 滚动条宽度），不盖滚动条。
+ * 用 absolute 定位（相对 .cm-editor），编辑器宽度变化时浏览器自动重排。
+ */
+function positionSearchPanel(): void {
+  const panel = document.querySelector('.cm-panel.cm-search') as HTMLElement | null;
+  const panels = panel ? (panel.closest('.cm-panels') as HTMLElement | null) : null;
+  const editor = document.getElementById('editor-container');
+  if (!panel || !panels || !editor) return;
+
+  panels.style.position = 'absolute';
+  panels.style.top = '0';
+  panels.style.left = 'auto';
+  panels.style.right = SCROLLBAR_WIDTH + 'px';
+  panels.style.width = 'max-content';
+  panels.style.maxWidth = `calc(100% - ${SCROLLBAR_WIDTH}px)`;
+  panels.style.bottom = 'auto';
+  panels.style.zIndex = '99';
+  panels.style.setProperty('right', SCROLLBAR_WIDTH + 'px', 'important');
+}
+
 function customizeSearchPanel() {
   const panel = document.querySelector('.cm-panel.cm-search') as HTMLElement | null;
   if (!panel) return;
@@ -894,34 +935,19 @@ function customizeSearchPanel() {
 
   if (closeBtn) closeBtn.classList.add('jg-search-close');
 
-  // 面板定位：贴 JSON 编辑器内容区右上角（顶部齐平、右缘齐平），宽度收缩到内容自然宽
-  // （原站 ace_search.right 是 right:0 锚定 + shrink-to-fit，约 371px，不是通栏）。
-  //
-  // 必须**同步**定位，不能等 rAF：此刻 DOM 重组已完成，panel 已在文档里，
-  // getBoundingClientRect() 立即可测。若延后到 rAF，面板会先以 CM 默认的
-  // sticky + bottom:0 渲染一帧（贴编辑器底部、窄 90px），下一帧才跳到
-  // 右上角——位置与宽度突变，在浏览器里表现为「面板先在底部闪一下再弹到
-  // 右上角」。快捷键路径尤其明显，因为按键本该是瞬时响应，人对位置突变
-  // 更敏感。实测两条路径（按钮 / Ctrl+F）都会闪，故在此一并修掉。
-  const panels = panel.closest('.cm-panels') as HTMLElement | null;
-  const editor = document.getElementById('editor-container');
-  if (panels && editor) {
-    const er = editor.getBoundingClientRect();
-    panels.style.position = 'fixed';
-    panels.style.top = Math.round(er.top) + 'px';
-    panels.style.width = 'max-content'; /* 容器是全宽 block，量宽会得到视口宽 */
-    panels.style.bottom = 'auto'; /* CM 默认 bottom:0 会把容器拉伸到全高，面板被推到底部 */
-    const pw = panel.getBoundingClientRect().width || 376;
-    panels.style.left = Math.max(0, Math.round(er.right - pw)) + 'px';
-    panels.style.zIndex = '99';
-  }
+  // 定位（锚定 JSON 编辑器内容区右上角、窗口缩放时重新锚定）见 positionSearchPanel。
+  positionSearchPanel();
 
   // 计数器与无匹配红框：监听编辑器匹配高亮变化（节流，避免滚动重绘风暴）
   if (searchPanelObserver) searchPanelObserver.disconnect();
   let counterPending = false;
   const updateCounter = () => {
     const current = document.querySelector('.cm-panel.cm-search');
-    if (!current) { searchPanelObserver!.disconnect(); searchPanelObserver = null; return; }
+    if (!current) {
+      searchPanelObserver!.disconnect();
+      searchPanelObserver = null;
+      return;
+    }
     const matches = Array.from(document.querySelectorAll('#editor-container .cm-searchMatch'));
     const sel = document.querySelector('#editor-container .cm-searchMatch-selected');
     let idx = sel ? matches.indexOf(sel) + 1 : 0;
@@ -954,6 +980,10 @@ function customizeSearchPanel() {
 function openEditorSearch() {
   openSearchPanel(inputEditor);
   customizeSearchPanel();
+  // 每次打开都清空搜索框，避免上次搜索内容残留（CM 的搜索状态存在编辑器
+  // state 里，面板重建时会从 state 恢复，导致用户看到旧查询）。
+  const searchField = document.querySelector('input[name=search]') as HTMLInputElement | null;
+  if (searchField) searchField.value = '';
 }
 
 // ========== 主题切换 ==========

@@ -803,6 +803,12 @@ body {
   margin: 0 20px 4px 0;
   overflow: hidden;
   line-height: 1.9;
+  /* 单行布局对齐原站 Ace searchbox；窄编辑器时面板被 max-width 压窄，
+     flex 让输入框先收缩（flex-shrink:1）、按钮保持原宽（flex:0 0 auto），
+     面板始终不溢出 JSON 面板 */
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
 }
 
 #editor-container .cm-panel.cm-search .jg-replace-form {
@@ -828,8 +834,12 @@ body {
   margin: 0;
   line-height: 26px;
   padding: 0 6px;
+  /* 宽编辑器下保持 17em 自然宽（约 238px，配合按钮合计约 371px，同原站）；
+     窄编辑器下面板被 max-width 压窄时输入框收缩（flex-shrink:1）
+     但不生长（flex-grow:0），保持单行布局不换行 */
   width: 17em;
-  min-width: 17em;
+  flex: 0 1 auto;
+  min-width: 0;
   height: 26px;
   vertical-align: top;
   box-sizing: content-box;
@@ -841,6 +851,7 @@ body {
   border-width: 1px 0;
   border-left: 1px solid #dcdcdc;
   display: inline-block;
+  flex: 0 0 auto;
   padding: 0 6px;
   background: #fff;
   cursor: pointer;

@@ -140,6 +140,33 @@ check(
   '再跳到右上角」的位置突变闪烁。'
 );
 
+// —— 7. 定位必须锚定内容区右缘而非编辑器外缘，并限制在内容区宽度内 ——
+// 面板右缘若对齐 #editor-container 的外缘，会盖住垂直滚动条；窄窗口下
+// 若没有 max-width 上限，372px 的面板会溢出 JSON 面板。因此定位逻辑使用
+// absolute 定位（相对 #editor-container），right 锚定到滚动条宽度（即内容区
+// 右缘），maxWidth 用 calc(100% - scrollbarWidth) 限制在内容区内。
+const posFn = mainTs.indexOf('function positionSearchPanel(');
+check(
+  '存在模块级定位函数 positionSearchPanel',
+  posFn >= 0,
+  '找不到 function positionSearchPanel(...) —— 面板定位逻辑应抽成可复用函数。'
+);
+if (posFn >= 0) {
+  const posBody = mainTs.slice(posFn, posFn + 1500);
+  check(
+    '定位使用 absolute 而非 fixed（自动跟踪编辑器宽度变化）',
+    posBody.includes("position = 'absolute'"),
+    'positionSearchPanel 应使用 absolute 定位（相对 #editor-container），' +
+    '这样全屏切换、分栏拖拽、窗口缩放时浏览器自动重排，无需 JS 监听 resize。'
+  );
+  check(
+    '定位使用 right:SCROLLBAR_WIDTH 贴内容区右缘（不盖滚动条）',
+    posBody.includes('SCROLLBAR_WIDTH'),
+    'positionSearchPanel 应设置 right = SCROLLBAR_WIDTH 让面板贴内容区右缘，' +
+    '不盖住垂直滚动条。'
+  );
+}
+
 // —— 报告 ——
 if (failures.length > 0) {
   console.error('搜索快捷键回归验证失败：\n');
@@ -154,5 +181,7 @@ console.log('  - 绑定触发面板定制');
 console.log('  - 打开与定制逻辑单点定义，快捷键与按钮共用');
 console.log('  - 共享入口之外无绕过定制的入口');
 console.log('  - 面板定位同步执行，无 rAF 延后导致的跳位闪烁');
+console.log('  - 面板 absolute 定位贴右缘，不遮盖滚动条主要轨道');
+console.log('  - 每次打开清空搜索框，避免上次搜索内容残留');
 console.log('\n注意：本脚本是源码层代理断言，无法证明浏览器行为。');
 console.log('面板实际外观与按键生效仍需按 issue #1 的人工验收清单确认。');
