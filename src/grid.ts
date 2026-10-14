@@ -554,6 +554,10 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
   if (colSum > 0) {
     spacerEl.style.width = colSum + 'px';
     spacerEl.style.minWidth = colSum + 'px';
+    // 行宽改由 CSS 变量给出（见 style.css 里 .virtual-grid-rows / .grid-row 的
+    // min-width: var(--table-w)）。单元格不再裁剪后若还用 max-content，浏览器会
+    // 先按 8KB 长值算出 63k px 固有宽度把整表撑爆。
+    rowsEl.style.setProperty('--table-w', colSum + 'px');
   }
 
   // 可见范围
@@ -707,8 +711,16 @@ function syncHeaderWidths(state: GridState): void {
   }
 }
 
-// 临时解除宽度约束后测量真实内容宽度
-function measureUnconstrainedWidth(el: HTMLElement): number {
+// 自动测宽的列宽上限。单元格不再裁剪内容后，8KB 字符串会把列撑到 7 万 px，
+// 横向滚动条退化成一条细线、整张表基本没法用；封顶后超长值交给单元格自己的
+// 横向滚动条。
+// 两档：原始值格子只放一个标量，1200 足够；展开格内含嵌套 table（多列时单列就有
+// 1k+），给 3000，保持裁剪时代"table-in-cell 按内容撑开"的观感。
+const MAX_AUTO_COL_WIDTH = 1200;
+const MAX_EXPANDED_COL_WIDTH = 3000;
+
+// 临时解除宽度约束后测量真实内容宽度（cap 为该列的宽度上限）
+function measureUnconstrainedWidth(el: HTMLElement, cap: number): number {
   // 搜索高亮带 padding/border（padding:1px 5px + 1px 红框），参与测量会让列宽在检索时跳动 → 测量期间中和
   const hl = el.querySelector('.jg-search-cur, .jg-search-soft');
   if (hl) hl.classList.add('jg-search-nomeasure');
@@ -731,7 +743,7 @@ function measureUnconstrainedWidth(el: HTMLElement): number {
   el.style.minWidth = prev.minWidth;
   el.style.maxWidth = prev.maxWidth;
   el.style.overflow = prev.overflow;
-  return w;
+  return Math.min(w, cap);
 }
 
 // 从 DOM 测量实际列宽：顶层 flex 子节点（.grid-cell / .cell-expandable）
@@ -748,7 +760,7 @@ function measureColumnWidths(state: GridState, rowsEl: HTMLElement, numCols: num
   if (headerEl) {
     const headerCells = headerEl.children;
     for (let c = 0; c < headerCells.length && c < numCols; c++) {
-      const cellW = measureUnconstrainedWidth(headerCells[c] as HTMLElement);
+      const cellW = measureUnconstrainedWidth(headerCells[c] as HTMLElement, MAX_AUTO_COL_WIDTH);
       if (cellW > widths[c]) widths[c] = cellW;
     }
   }
@@ -761,7 +773,8 @@ function measureColumnWidths(state: GridState, rowsEl: HTMLElement, numCols: num
     for (let i = 0; i < row.children.length && col < numCols; i++) {
       const child = row.children[i] as HTMLElement;
       if (!child.classList.contains('grid-cell') && !child.classList.contains('cell-expandable')) continue;
-      const cellW = measureUnconstrainedWidth(child);
+      const cap = child.classList.contains('cell-expandable') ? MAX_EXPANDED_COL_WIDTH : MAX_AUTO_COL_WIDTH;
+      const cellW = measureUnconstrainedWidth(child, cap);
       if (cellW > widths[col]) widths[col] = cellW;
       col++;
     }
@@ -807,12 +820,12 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
         parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath, searchCellClass(actualIdx, h), rowSelCls));
       } else {
         const { display, typeClass } = formatCell(val);
-        const truncated = truncateText(display);
+        const fitted = cellText(display);
         parts.push('<div class="grid-cell ' + typeClass + (navSelectedClass(state, cellPath, 'value') || rowSelCls) + '" style="flex:0 0 ' + w + 'px"'
           + ' data-row-idx="' + actualIdx + '" data-col-idx="' + h + '"'
           + ' data-json-path="' + escHtml(cellPath) + '" data-nav-target="value"'
-          + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
-          + '><span class="cell-text' + searchCellClass(actualIdx, h) + '">' + escHtml(truncated.text) + '</span></div>');
+          + (fitted.isLong ? ' title="' + escHtml(display) + '"' : '')
+          + '><span class="cell-text' + searchCellClass(actualIdx, h) + '">' + escHtml(fitted.text) + '</span></div>');
       }
     }
   } else {
@@ -830,14 +843,14 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
       parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW, keyPath, searchCellClass(actualIdx, 1)));
     } else {
       const display = obj.val === null ? 'null' : String(obj.val);
-      const truncated = truncateText(display);
+      const fitted = cellText(display);
       const valW = state.colWidths[1] || 200;
       const typeClass = obj.val === null ? 'type-null' : 'type-' + typeof obj.val;
       parts.push('<div class="grid-cell ' + typeClass + navSelectedClass(state, keyPath, 'value') + '" style="flex:0 0 ' + valW + 'px"'
         + ' data-row-idx="' + actualIdx + '" data-col-idx="1"'
         + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="value"'
-        + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
-        + '><span class="cell-text' + searchCellClass(actualIdx, 1) + '">' + escHtml(truncated.text) + '</span></div>');
+        + (fitted.isLong ? ' title="' + escHtml(display) + '"' : '')
+        + '><span class="cell-text' + searchCellClass(actualIdx, 1) + '">' + escHtml(fitted.text) + '</span></div>');
     }
   }
   parts.push('</div>');
@@ -869,11 +882,16 @@ function renderExpandableCell(
     labelText = ' ' + escHtml(headerName) + ' {}';
   }
 
-  // 折叠：固定列宽对齐；展开：至少保持列宽，内容可撑开（table-in-cell）
+  // 折叠：固定列宽对齐；展开：顶层固定在列宽，内容宽出来的部分由
+  // .cell-expandable 的横向滚动条承载（不再无限撑开，否则 8KB 嵌套值能把整行
+  // 撑到 63k px，横向滚动条退化成一条线）。嵌套 table 内的展开格没有列宽概念，
+  // 保持原来"按内容撑开"。
   let styleAttr = '';
   if (isExpanded) {
     const minW = colWidth || 120;
-    styleAttr = ' style="flex:0 0 auto;min-width:' + minW + 'px"';
+    styleAttr = colWidth
+      ? ' style="flex:0 0 ' + minW + 'px;min-width:' + minW + 'px"'
+      : ' style="flex:0 0 auto;min-width:' + minW + 'px"';
   } else if (colWidth) {
     styleAttr = ' style="flex:0 0 ' + colWidth + 'px"';
   }
@@ -939,11 +957,10 @@ function renderNestedObjectTable(val: Record<string, unknown>, expandPath: strin
       html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson, '') + '</td>';
     } else {
       const display = cellVal === null ? 'null' : String(cellVal);
-      const truncated = truncateText(display);
       const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
       html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
         + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-        + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+        + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
     }
     html += '</tr>';
   }
@@ -968,11 +985,10 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
       html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
     } else {
       const display = item === null ? 'null' : String(item);
-      const truncated = truncateText(display);
       const typeClass = item === null ? 'type-null' : 'type-' + typeof item;
       html += '<td class="ov' + rowSelCls + '"'
         + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-        + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+        + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
     }
     html += '</tr>';
   }
@@ -1016,11 +1032,10 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
         html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
       } else {
         const display = cellVal === null ? 'null' : String(cellVal);
-        const truncated = truncateText(display);
         const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
         html += '<td class="ov' + (rowSelCls || navSelectedClass(currentGridState, childJson, 'value')) + '"'
           + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-          + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+          + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
       }
     }
     html += '</tr>';
@@ -1137,11 +1152,11 @@ function formatCell(val: unknown): { display: string; typeClass: string } {
   return { display: String(val), typeClass: 'type-' + type };
 }
 
-function truncateText(text: string): { text: string; shouldTruncate: boolean } {
-  if (text.length > 80) {
-    return { text: text.slice(0, 77) + '\u2026', shouldTruncate: true };
-  }
-  return { text, shouldTruncate: false };
+// 长值不裁剪：全文留在格子里，宽度不够时由单元格自己的横向滚动条承载。
+// 固定行高的虚拟滚动不能把 8KB 字符串折成上百行，所以走滚动而不是折行。
+// isLong 只用来决定是否挂 title 提示，不参与显示内容。
+function cellText(text: string): { text: string; isLong: boolean } {
+  return { text: text, isLong: text.length > 80 };
 }
 
 // 展开全部：按当前可见行序列（filteredRows）生成与渲染一致的路径
