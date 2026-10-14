@@ -92,12 +92,13 @@ function getWorkerCode(): string {
 
     function parseJSON(s) {
       var t = performance.now();
-      var d = JSON.parse(s);
+      var preprocessed = preprocessBigInts(s);
+      var d = JSON.parse(preprocessed);
       // exceedsCompactBudget(v, depthLimit) 就是通用的"嵌套超限"遍历，直接复用
       if (exceedsCompactBudget(d, CLONE_MAX_DEPTH)) {
         throw new Error('文档嵌套超过 ' + CLONE_MAX_DEPTH + ' 层，无法渲染到 GRID/树视图');
       }
-      return { data: d, parseTime: performance.now() - t, size: s.length };
+      return { data: d, parseTime: performance.now() - t, size: s.length, bigIntLiterals: bigIntLiterals.slice() };
     }
 
     // 紧凑格式化：整行（含缩进与键前缀）不超过 100 显示列就折叠成一行
@@ -1282,7 +1283,7 @@ async function renderGridView(): Promise<{ ok: boolean; error?: string }> {
    }
    try {
      const result = await workerRequest('parse', input);
-     renderVirtualGrid(result.data, gridView);
+     renderVirtualGrid(result.data, gridView, result.bigIntLiterals);
      return { ok: true };
    } catch (err: any) {
      renderPanelMessage(gridView, 'error', '无法渲染', err.message);

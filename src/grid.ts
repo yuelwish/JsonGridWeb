@@ -521,6 +521,8 @@ function formatExportValue(val: unknown): string {
       return String(val);
     }
   }
+  // 大整数哨兵：返回原始字面量
+  if (typeof val === 'string' && isBigIntSentinel(val)) return extractBigIntLiteral(val);
   return String(val);
 }
 
