@@ -725,6 +725,9 @@ function initEditors() {
       // basicSetup 之前；scripts/verify-search-keymap.mjs 会守住这个次序。
       keymap.of([{ key: 'Mod-f', run: () => { openEditorSearch(); return true; } }]),
       basicSetup,
+      // 超宽行自动折行显示（issue #4）。软换行：逻辑行数、行号、文档内容均不变，
+      // 仅显示层在超出编辑器可视宽度时折行。短行视觉零变化。
+      EditorView.lineWrapping,
       json(),
       syntaxHighlighting(originalSiteHighlight),
       navHighlight,
