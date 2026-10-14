@@ -2,10 +2,15 @@
 
 const ROW_HEIGHT = 42;
 const OVERSCAN = 5;
+// 折行行高安全上限（px）。超过此值的行降级回横向滚动，防止 3MB 字符串
+// 折出 2.5 万行压垮虚拟滚动。200px 约允许 4-5 行文字折行。
+const WRAP_HEIGHT_CAP = 200;
 
 // 模块级状态，供批量展开/折叠使用
 let currentGridState: GridState | null = null;
 let gridRerender: (() => void) | null = null;
+// 大整数保真：worker 传来的原始字面量数组，哨兵字符串通过索引引用
+let bigIntLiterals: string[] = [];
 
 // 视口变化时重算框体并重绘可见行。框体是渲染时定死的像素值，不重算的话
 // 拉动窗口后 GRID 不会跟随（左侧 CodeMirror 自带适配，右侧必须自己来）。
@@ -95,6 +100,8 @@ interface GridState {
   rowOriginalIndices: number[];
   /** 当前选中导航：path 为编码后 pathKey，target 为 key 或 value */
   selectedNav: { path: string; target: 'key' | 'value' } | null;
+  /** 折行超高降级的行下标集（filteredRows 下标）。这些行的格子回到横向滚动 */
+  overflowRows: Set<number>;
 }
 
 // 搜索状态（匹配集/当前项）变化时广播，供主线程的搜索面板刷新计数。
@@ -103,7 +110,8 @@ function notifySearchChanged(): void {
   window.dispatchEvent(new CustomEvent('grid-search-changed'));
 }
 
-export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
+export function renderVirtualGrid(data: unknown, container: HTMLElement, bigInts?: string[]): void {
+  if (bigInts) bigIntLiterals = bigInts;
   container.innerHTML = '';
   if (searchState) notifySearchChanged();
   searchState = null; // 新数据渲染时清除旧搜索高亮
@@ -156,7 +164,8 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     sortColumn: -1, sortDirection: null,
     filteredRows: rows,
     rowOriginalIndices: initialIndices,
-    selectedNav: null
+    selectedNav: null,
+    overflowRows: new Set<number>()
   };
   currentGridState = state;
 
@@ -265,6 +274,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
         // 展开/折叠后重测列宽与行高（保留已有 colWidths 作下限）
         state.measured = false;
         state.rowHeights = [];
+        state.overflowRows.clear();
       }
     }
 
@@ -495,6 +505,8 @@ function summarizeValue(val: unknown): string {
   if (val === undefined) return '';
   if (Array.isArray(val)) return '[' + val.length + ']';
   if (typeof val === 'object') return '{...}';
+  // 大整数哨兵：返回原始字面量
+  if (typeof val === 'string' && isBigIntSentinel(val)) return extractBigIntLiteral(val);
   return String(val);
 }
 
@@ -589,6 +601,7 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
 
   // 测量实际行高并更新缓存；高度剧变时同帧再校正可见窗口
   let heightChanged = false;
+  let overflowChanged = false;
   if (rowsEl.children.length > 0) {
     for (let i = startIdx; i < endIdx; i++) {
       const el = rowsEl.children[i - startIdx] as HTMLElement;
@@ -597,6 +610,14 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
         const prev = state.rowHeights[i] || ROW_HEIGHT;
         if (Math.abs(h - prev) > 1) heightChanged = true;
         state.rowHeights[i] = h;
+        // 折行超高检测：超过安全上限的行标记降级，下次渲染加 nowrap。
+        // 已降级的行（有 grid-row-overflow 类）不参与检测，避免反复切换。
+        // 展开的行高度由嵌套内容决定，不是折行导致的，不应降级。
+        if (h > WRAP_HEIGHT_CAP && !state.overflowRows.has(i)
+          && !el.querySelector('.cell-expandable.is-open')) {
+          state.overflowRows.add(i);
+          overflowChanged = true;
+        }
       }
     }
     // 更新 spacer 总高度
@@ -622,10 +643,12 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
       }
       state.colWidths = widths;
       state.measured = true;
+      // 列宽变化后折行行为可能改变，清空降级标记让下次渲染重新检测
+      if (changed) state.overflowRows.clear();
       syncHeaderWidths(state);
-      if (changed || heightChanged) {
+      if (changed || heightChanged || overflowChanged) {
         // 同步重绘，避免 rAF 期间再被其他路径清掉；限制校正次数防止递归
-        if (layoutPass < 2) {
+        if (layoutPass < 3) {
           renderVisibleRows(state, layoutPass + 1);
           return;
         }
@@ -633,7 +656,7 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
     } else {
       state.measured = true;
     }
-  } else if (heightChanged && layoutPass < 2) {
+  } else if ((heightChanged || overflowChanged) && layoutPass < 3) {
     renderVisibleRows(state, layoutPass + 1);
     return;
   }
@@ -793,7 +816,9 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
   const parts: string[] = [];
 
   // flex 行：高度由内容撑开，列宽由 colWidths 对齐
-  parts.push('<div class="grid-row">');
+  // 折行超高降级的行加 grid-row-overflow 类，格子回到横向滚动
+  const overflowCls = state.overflowRows.has(actualIdx) ? ' grid-row-overflow' : '';
+  parts.push('<div class="grid-row' + overflowCls + '">');
 
   if (viewMode === 'array') {
     // 顶层数组路径用原始数据索引，与 getCellPath 一致（禁止 indexOf 首次命中）
@@ -1138,6 +1163,15 @@ function escHtml(text: string): string {
   return d.innerHTML.replace(/"/g, '&quot;');
 }
 
+function isBigIntSentinel(s: string): boolean {
+  return s.length >= 4 && s.charCodeAt(0) === 1 && s.charCodeAt(s.length - 1) === 1 && s.charAt(1) === 'B' && s.charAt(2) === 'G';
+}
+
+function extractBigIntLiteral(s: string): string {
+  const idx = Number(s.slice(3, s.length - 1));
+  return bigIntLiterals[idx] || s;
+}
+
 function formatCell(val: unknown): { display: string; typeClass: string } {
   if (val === null || val === undefined) {
     return { display: val === null ? 'null' : '', typeClass: 'type-null' };
@@ -1148,6 +1182,10 @@ function formatCell(val: unknown): { display: string; typeClass: string } {
   const type = typeof val;
   if (type === 'object') {
     return { display: '{...}', typeClass: 'type-object' };
+  }
+  // 大整数哨兵：显示为原始字面量，当数字类型显示
+  if (type === 'string' && isBigIntSentinel(val as string)) {
+    return { display: extractBigIntLiteral(val as string), typeClass: 'type-number' };
   }
   return { display: String(val), typeClass: 'type-' + type };
 }
@@ -1202,6 +1240,7 @@ export function expandAll(): void {
   // 展开后重测列宽/行高，保留 colWidths 作下限
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  currentGridState.overflowRows.clear();
   if (gridRerender) gridRerender();
 }
 
@@ -1212,6 +1251,7 @@ export function collapseAll(): void {
   resetColWidthsToEstimate(currentGridState);
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  currentGridState.overflowRows.clear();
   if (gridRerender) gridRerender();
 }
 
@@ -1290,6 +1330,7 @@ function applySortAndFilter(state: GridState): void {
   resetColWidthsToEstimate(state);
   state.measured = false;
   state.rowHeights = [];
+  state.overflowRows.clear();
 }
 
 // 更新表头排序指示器
@@ -1784,6 +1825,7 @@ export function onCellUpdated(newData: unknown): void {
   resetColWidthsToEstimate(currentGridState);
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  currentGridState.overflowRows.clear();
   // 编辑改变了数据 → 重算搜索匹配与列头高亮，否则红框/计数停留在旧值上
   if (searchState) recomputeSearch();
   applySearchHeaderHighlight();

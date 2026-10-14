@@ -1282,21 +1282,30 @@ body {
   background: var(--hover-color);
 }
 
-/* 单元格：带右侧边框。长值不裁剪——全文留在格子里，宽度不够时单元格自己出
-   横向滚动条（固定行高的虚拟滚动不能把 8KB 字符串折成上百行）。
+/* 单元格：带右侧边框。默认折行显示（white-space: pre-wrap），行高随内容增长。
+   折行高度超过安全上限时，JS 给该行加 .grid-row-overflow 类，降级回横向滚动。
    text-overflow: clip 兼掉个别引擎在 overflow 非 visible 时仍画省略号的默认行为。
    表头 .virtual-grid-header .grid-cell 特异性更高，仍走原来的省略号。 */
 .grid-cell {
   padding: 4px 8px;
-  white-space: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  overflow-x: hidden;
+  overflow-y: visible;
   text-overflow: clip;
   flex: 0 0 auto;
   min-width: 0;
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
   scrollbar-width: thin;
+}
+
+/* 折行超高降级：该行所有格子回到横向滚动，内容完整不裁剪 */
+.grid-row-overflow > .grid-cell {
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /* 单元格内的横向滚动条压到 6px，长值行不会比普通行高出一大截 */
