@@ -1,0 +1,39 @@
+{
+  "service": "order-system",
+  "events": [
+    {
+      "eventId": 1791973727783794676,
+      "userId": 12345678901234567890,
+      "type": "order_created",
+      "timestamp": 1699012345678901234,
+      "payload": {
+        "orderId": 9007199254740993,
+        "amount": 199.99,
+        "currency": "CNY",
+        "items": [
+          {
+            "sku": "ITEM-001",
+            "quantity": 2,
+            "lineId": 8888888888888888888
+          }
+        ]
+      }
+    },
+    {
+      "eventId": -1791973727783794676,
+      "userId": 9999999999999999999,
+      "type": "refund",
+      "timestamp": 1699099876543210987,
+      "payload": {
+        "refundId": 5555555555555555555,
+        "reason": "customer_request",
+        "approved": true
+      }
+    }
+  ],
+  "metadata": {
+    "totalEvents": 2,
+    "safeId": 9007199254740991,
+    "debug": false
+  }
+}
