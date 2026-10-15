@@ -500,14 +500,18 @@ function collapsedLabelLength(key: string, val: unknown): number {
 }
 
 // 主线程轻量摘要，避免对完整结构 JSON.stringify（列宽/排序/过滤热路径）
+// 大整数哨兵解析：如果是哨兵字符串则返回原始字面量，否则返回原值
+function resolveBigIntSentinel(val: unknown): unknown {
+  if (typeof val === 'string' && isBigIntSentinel(val)) return extractBigIntLiteral(val);
+  return val;
+}
+
 function summarizeValue(val: unknown): string {
   if (val === null) return 'null';
   if (val === undefined) return '';
   if (Array.isArray(val)) return '[' + val.length + ']';
   if (typeof val === 'object') return '{...}';
-  // 大整数哨兵：返回原始字面量
-  if (typeof val === 'string' && isBigIntSentinel(val)) return extractBigIntLiteral(val);
-  return String(val);
+  return String(resolveBigIntSentinel(val));
 }
 
 // CSV 为一次性导出，对象/数组保留完整序列化
@@ -521,9 +525,7 @@ function formatExportValue(val: unknown): string {
       return String(val);
     }
   }
-  // 大整数哨兵：返回原始字面量
-  if (typeof val === 'string' && isBigIntSentinel(val)) return extractBigIntLiteral(val);
-  return String(val);
+  return String(resolveBigIntSentinel(val));
 }
 
 interface ChildEntry { key: string; value: unknown; }
@@ -968,6 +970,18 @@ function renderNestedTable(val: unknown, expandPath: string, jsonPath: string): 
   return renderNestedObjectTable(val as Record<string, unknown>, expandPath, jsonPath);
 }
 
+// 嵌套表格叶子单元格：非展开的标量值
+function renderNestedLeafCell(
+  val: unknown,
+  childJson: string,
+  extraClass: string
+): string {
+  const { display, typeClass } = formatCell(val);
+  return '<td class="ov' + extraClass + '"'
+    + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
+    + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
+}
+
 function renderNestedObjectTable(val: Record<string, unknown>, expandPath: string, jsonPath: string): string {
   const keys = Object.keys(val);
   let html = '<table border="0" cellspacing="0" cellpadding="0" class="nested-grid-table">';
@@ -982,10 +996,7 @@ function renderNestedObjectTable(val: Record<string, unknown>, expandPath: strin
     if (isExpandable(cellVal)) {
       html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson, '') + '</td>';
     } else {
-      const { display, typeClass } = formatCell(cellVal);
-      html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
-        + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-        + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
+      html += renderNestedLeafCell(cellVal, childJson, navSelectedClass(currentGridState, childJson, 'value'));
     }
     html += '</tr>';
   }
@@ -1009,10 +1020,7 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
       const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
       html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
     } else {
-      const { display, typeClass } = formatCell(item);
-      html += '<td class="ov' + rowSelCls + '"'
-        + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-        + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
+      html += renderNestedLeafCell(item, childJson, rowSelCls);
     }
     html += '</tr>';
   }
@@ -1055,10 +1063,7 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
         const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
         html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
       } else {
-        const { display, typeClass } = formatCell(cellVal);
-        html += '<td class="ov' + (rowSelCls || navSelectedClass(currentGridState, childJson, 'value')) + '"'
-          + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-          + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
+        html += renderNestedLeafCell(cellVal, childJson, rowSelCls || navSelectedClass(currentGridState, childJson, 'value'));
       }
     }
     html += '</tr>';
