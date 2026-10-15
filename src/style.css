@@ -1507,7 +1507,7 @@ body {
   overflow-y: hidden;
   white-space: nowrap;
   min-width: 0;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
 }
 
 .cell-expandable:hover {
