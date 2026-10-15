@@ -869,10 +869,9 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
       const valW = state.colWidths[1] || 200;
       parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW, keyPath, searchCellClass(actualIdx, 1)));
     } else {
-      const display = obj.val === null ? 'null' : String(obj.val);
+      const { display, typeClass } = formatCell(obj.val);
       const fitted = cellText(display);
       const valW = state.colWidths[1] || 200;
-      const typeClass = obj.val === null ? 'type-null' : 'type-' + typeof obj.val;
       parts.push('<div class="grid-cell ' + typeClass + navSelectedClass(state, keyPath, 'value') + '" style="flex:0 0 ' + valW + 'px"'
         + ' data-row-idx="' + actualIdx + '" data-col-idx="1"'
         + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="value"'
