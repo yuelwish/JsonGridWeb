@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "verify": "node scripts/verify-compact.mjs",
+    "verify": "node scripts/verify-compact.mjs && node scripts/verify-bigint.mjs",
     "verify:search": "node scripts/verify-search-keymap.mjs"
   },
   "devDependencies": {

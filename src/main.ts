@@ -92,12 +92,13 @@ function getWorkerCode(): string {
 
     function parseJSON(s) {
       var t = performance.now();
-      var d = JSON.parse(s);
+      var preprocessed = preprocessBigInts(s);
+      var d = JSON.parse(preprocessed);
       // exceedsCompactBudget(v, depthLimit) 就是通用的"嵌套超限"遍历，直接复用
       if (exceedsCompactBudget(d, CLONE_MAX_DEPTH)) {
         throw new Error('文档嵌套超过 ' + CLONE_MAX_DEPTH + ' 层，无法渲染到 GRID/树视图');
       }
-      return { data: d, parseTime: performance.now() - t, size: s.length };
+      return { data: d, parseTime: performance.now() - t, size: s.length, bigIntLiterals: bigIntLiterals.slice() };
     }
 
     // 紧凑格式化：整行（含缩进与键前缀）不超过 100 显示列就折叠成一行
@@ -152,9 +153,19 @@ function getWorkerCode(): string {
       }
       return w;
     }
+    // 叶子节点在最终输出中的显示列宽。哨兵字符串（大整数占位）需要按原始字面量
+    // 算宽度，否则折叠判定会因哨兵长度与实际数字长度不同而偏差。
+    function leafOutputWidth(v) {
+      if (typeof v === 'string' && v.length >= 4 && v.charCodeAt(0) === 1 && v.charCodeAt(v.length - 1) === 1 && v.charAt(1) === 'B' && v.charAt(2) === 'G') {
+        var allDigits = true;
+        for (var j = 3; j < v.length - 1; j++) { if (v.charCodeAt(j) < 48 || v.charCodeAt(j) > 57) { allDigits = false; break; } }
+        if (allDigits) return displayWidth(bigIntLiterals[Number(v.slice(3, v.length - 1))]);
+      }
+      return displayWidth(JSON.stringify(v));
+    }
     // 返回该节点全部折叠成一行的显示列宽
     function flatWidth(v) {
-      if (v === null || typeof v !== 'object') return displayWidth(JSON.stringify(v));
+      if (v === null || typeof v !== 'object') return leafOutputWidth(v);
       var cached = widthCache.get(v);
       if (cached !== undefined) return cached;
       var isArr = Array.isArray(v);
@@ -261,21 +272,93 @@ function getWorkerCode(): string {
       return false;
     }
 
+    // —— 大整数保真 ——
+    // JSON.parse 把超过 2^53-1 的整数塞进 double，低位被静默改写。
+    // 不能 BigInt（ES2020，目标浏览器不支持）。唯一路线：解析前把会掉精度的
+    // 数字替换成哨兵字符串，序列化后还原原始字面量。
+    // 哨兵用 SOH (charCode 1) 包裹：SOH + 'BG' + index + SOH。SOH 是控制字符，
+    // JSON.stringify 会转义为 \\u0001，用户数据几乎不可能恰好包含这个序列。
+    var bigIntLiterals = [];
+
+    // 扫描 JSON 文本，把超出双精度安全范围的整数字面量替换为哨兵字符串。
+    // 状态机跟踪是否在字符串内，避免误改字符串内容。
+    function preprocessBigInts(s) {
+      bigIntLiterals = [];
+      var out = '';
+      var i = 0;
+      var inStr = false;
+      var esc = false;
+      while (i < s.length) {
+        var c = s.charAt(i);
+        if (inStr) {
+          out += c;
+          if (esc) { esc = false; }
+          else if (c === '\\\\') { esc = true; }
+          else if (c === '"') { inStr = false; }
+          i++;
+          continue;
+        }
+        if (c === '"') { inStr = true; out += c; i++; continue; }
+        // 数字以 '-' 或数字开头
+        if (c === '-' || (c >= '0' && c <= '9')) {
+          var start = i;
+          if (c === '-') i++;
+          while (i < s.length && s.charAt(i) >= '0' && s.charAt(i) <= '9') i++;
+          if (i < s.length && s.charAt(i) === '.') { i++; while (i < s.length && s.charAt(i) >= '0' && s.charAt(i) <= '9') i++; }
+          if (i < s.length && (s.charAt(i) === 'e' || s.charAt(i) === 'E')) { i++; if (i < s.length && (s.charAt(i) === '+' || s.charAt(i) === '-')) i++; while (i < s.length && s.charAt(i) >= '0' && s.charAt(i) <= '9') i++; }
+          var literal = s.substring(start, i);
+          var n = Number(literal);
+          // 不安全整数：值超过 MAX_SAFE_INTEGER 或溢出到 Infinity
+          if (!isFinite(n) || (n % 1 === 0 && (n > 9007199254740991 || n < -9007199254740991))) {
+            var idx = bigIntLiterals.length;
+            bigIntLiterals.push(literal);
+            out += '"\\\\u0001BG' + idx + '\\\\u0001"';
+          } else {
+            out += literal;
+          }
+          continue;
+        }
+        out += c;
+        i++;
+      }
+      return out;
+    }
+
+    // 序列化后把哨兵字符串还原为原始数字字面量。
+    // JSON.stringify 把 SOH 转义为 \\u0001（6 个字面字符），所以匹配这个形式。
+    function postprocessBigInts(output) {
+      if (bigIntLiterals.length === 0) return output;
+      var SOH_ESC = '\\\\u0001';
+      for (var i = 0; i < bigIntLiterals.length; i++) {
+        var sentinel = '"' + SOH_ESC + 'BG' + i + SOH_ESC + '"';
+        var pos = output.indexOf(sentinel);
+        while (pos !== -1) {
+          output = output.slice(0, pos) + bigIntLiterals[i] + output.slice(pos + sentinel.length);
+          pos = output.indexOf(sentinel, pos + bigIntLiterals[i].length);
+        }
+      }
+      return output;
+    }
+
     function formatJSON(p) {
       var s = p.text;
       var wantCompact = !!p.compact;
       var t = performance.now();
-      var d = JSON.parse(s);
+      var preprocessed = preprocessBigInts(s);
+      var d = JSON.parse(preprocessed);
       var depthLimit = Math.min(COMPACT_MAX_DEPTH, Math.floor(COMPACT_COST_BUDGET / Math.max(s.length, 1)));
       var compact = wantCompact && !exceedsCompactBudget(d, depthLimit);
       var r = compact ? compactDocument(d) : JSON.stringify(d, null, 2);
+      r = postprocessBigInts(r);
       return { result: r, processTime: performance.now() - t, originalSize: s.length, formattedSize: r.length, compact: compact };
     }
 
     function compressJSON(s) {
       var t = performance.now();
-      var d = JSON.parse(s);
+      var preprocessed = preprocessBigInts(s);
+      var d = JSON.parse(preprocessed);
       var r = JSON.stringify(d);
+      r = postprocessBigInts(r);
       return { result: r, processTime: performance.now() - t, originalSize: s.length, compressedSize: r.length, saved: s.length - r.length };
     }
 
@@ -725,6 +808,9 @@ function initEditors() {
       // basicSetup 之前；scripts/verify-search-keymap.mjs 会守住这个次序。
       keymap.of([{ key: 'Mod-f', run: () => { openEditorSearch(); return true; } }]),
       basicSetup,
+      // 超宽行自动折行显示（issue #4）。软换行：逻辑行数、行号、文档内容均不变，
+      // 仅显示层在超出编辑器可视宽度时折行。短行视觉零变化。
+      EditorView.lineWrapping,
       json(),
       syntaxHighlighting(originalSiteHighlight),
       navHighlight,
@@ -1197,7 +1283,7 @@ async function renderGridView(): Promise<{ ok: boolean; error?: string }> {
    }
    try {
      const result = await workerRequest('parse', input);
-     renderVirtualGrid(result.data, gridView);
+     renderVirtualGrid(result.data, gridView, result.bigIntLiterals);
      return { ok: true };
    } catch (err: any) {
      renderPanelMessage(gridView, 'error', '无法渲染', err.message);

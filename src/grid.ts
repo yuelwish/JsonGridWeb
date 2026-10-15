@@ -2,10 +2,15 @@
 
 const ROW_HEIGHT = 42;
 const OVERSCAN = 5;
+// 折行行高安全上限（px）。超过此值的行降级回横向滚动，防止 3MB 字符串
+// 折出 2.5 万行压垮虚拟滚动。200px 约允许 4-5 行文字折行。
+const WRAP_HEIGHT_CAP = 200;
 
 // 模块级状态，供批量展开/折叠使用
 let currentGridState: GridState | null = null;
 let gridRerender: (() => void) | null = null;
+// 大整数保真：worker 传来的原始字面量数组，哨兵字符串通过索引引用
+let bigIntLiterals: string[] = [];
 
 // 视口变化时重算框体并重绘可见行。框体是渲染时定死的像素值，不重算的话
 // 拉动窗口后 GRID 不会跟随（左侧 CodeMirror 自带适配，右侧必须自己来）。
@@ -95,6 +100,8 @@ interface GridState {
   rowOriginalIndices: number[];
   /** 当前选中导航：path 为编码后 pathKey，target 为 key 或 value */
   selectedNav: { path: string; target: 'key' | 'value' } | null;
+  /** 折行超高降级的行下标集（filteredRows 下标）。这些行的格子回到横向滚动 */
+  overflowRows: Set<number>;
 }
 
 // 搜索状态（匹配集/当前项）变化时广播，供主线程的搜索面板刷新计数。
@@ -103,7 +110,8 @@ function notifySearchChanged(): void {
   window.dispatchEvent(new CustomEvent('grid-search-changed'));
 }
 
-export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
+export function renderVirtualGrid(data: unknown, container: HTMLElement, bigInts?: string[]): void {
+  if (bigInts) bigIntLiterals = bigInts;
   container.innerHTML = '';
   if (searchState) notifySearchChanged();
   searchState = null; // 新数据渲染时清除旧搜索高亮
@@ -156,7 +164,8 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
     sortColumn: -1, sortDirection: null,
     filteredRows: rows,
     rowOriginalIndices: initialIndices,
-    selectedNav: null
+    selectedNav: null,
+    overflowRows: new Set<number>()
   };
   currentGridState = state;
 
@@ -265,6 +274,7 @@ export function renderVirtualGrid(data: unknown, container: HTMLElement): void {
         // 展开/折叠后重测列宽与行高（保留已有 colWidths 作下限）
         state.measured = false;
         state.rowHeights = [];
+        state.overflowRows.clear();
       }
     }
 
@@ -490,12 +500,18 @@ function collapsedLabelLength(key: string, val: unknown): number {
 }
 
 // 主线程轻量摘要，避免对完整结构 JSON.stringify（列宽/排序/过滤热路径）
+// 大整数哨兵解析：如果是哨兵字符串则返回原始字面量，否则返回原值
+function resolveBigIntSentinel(val: unknown): unknown {
+  if (typeof val === 'string' && isBigIntSentinel(val)) return extractBigIntLiteral(val);
+  return val;
+}
+
 function summarizeValue(val: unknown): string {
   if (val === null) return 'null';
   if (val === undefined) return '';
   if (Array.isArray(val)) return '[' + val.length + ']';
   if (typeof val === 'object') return '{...}';
-  return String(val);
+  return String(resolveBigIntSentinel(val));
 }
 
 // CSV 为一次性导出，对象/数组保留完整序列化
@@ -509,7 +525,7 @@ function formatExportValue(val: unknown): string {
       return String(val);
     }
   }
-  return String(val);
+  return String(resolveBigIntSentinel(val));
 }
 
 interface ChildEntry { key: string; value: unknown; }
@@ -554,6 +570,10 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
   if (colSum > 0) {
     spacerEl.style.width = colSum + 'px';
     spacerEl.style.minWidth = colSum + 'px';
+    // 行宽改由 CSS 变量给出（见 style.css 里 .virtual-grid-rows / .grid-row 的
+    // min-width: var(--table-w)）。单元格不再裁剪后若还用 max-content，浏览器会
+    // 先按 8KB 长值算出 63k px 固有宽度把整表撑爆。
+    rowsEl.style.setProperty('--table-w', colSum + 'px');
   }
 
   // 可见范围
@@ -585,6 +605,7 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
 
   // 测量实际行高并更新缓存；高度剧变时同帧再校正可见窗口
   let heightChanged = false;
+  let overflowChanged = false;
   if (rowsEl.children.length > 0) {
     for (let i = startIdx; i < endIdx; i++) {
       const el = rowsEl.children[i - startIdx] as HTMLElement;
@@ -593,6 +614,14 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
         const prev = state.rowHeights[i] || ROW_HEIGHT;
         if (Math.abs(h - prev) > 1) heightChanged = true;
         state.rowHeights[i] = h;
+        // 折行超高检测：超过安全上限的行标记降级，下次渲染加 nowrap。
+        // 已降级的行（有 grid-row-overflow 类）不参与检测，避免反复切换。
+        // 展开的行高度由嵌套内容决定，不是折行导致的，不应降级。
+        if (h > WRAP_HEIGHT_CAP && !state.overflowRows.has(i)
+          && !el.querySelector('.cell-expandable.is-open')) {
+          state.overflowRows.add(i);
+          overflowChanged = true;
+        }
       }
     }
     // 更新 spacer 总高度
@@ -618,10 +647,12 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
       }
       state.colWidths = widths;
       state.measured = true;
+      // 列宽变化后折行行为可能改变，清空降级标记让下次渲染重新检测
+      if (changed) state.overflowRows.clear();
       syncHeaderWidths(state);
-      if (changed || heightChanged) {
+      if (changed || heightChanged || overflowChanged) {
         // 同步重绘，避免 rAF 期间再被其他路径清掉；限制校正次数防止递归
-        if (layoutPass < 2) {
+        if (layoutPass < 3) {
           renderVisibleRows(state, layoutPass + 1);
           return;
         }
@@ -629,7 +660,7 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
     } else {
       state.measured = true;
     }
-  } else if (heightChanged && layoutPass < 2) {
+  } else if ((heightChanged || overflowChanged) && layoutPass < 3) {
     renderVisibleRows(state, layoutPass + 1);
     return;
   }
@@ -707,8 +738,16 @@ function syncHeaderWidths(state: GridState): void {
   }
 }
 
-// 临时解除宽度约束后测量真实内容宽度
-function measureUnconstrainedWidth(el: HTMLElement): number {
+// 自动测宽的列宽上限。单元格不再裁剪内容后，8KB 字符串会把列撑到 7 万 px，
+// 横向滚动条退化成一条细线、整张表基本没法用；封顶后超长值交给单元格自己的
+// 横向滚动条。
+// 两档：原始值格子只放一个标量，1200 足够；展开格内含嵌套 table（多列时单列就有
+// 1k+），给 3000，保持裁剪时代"table-in-cell 按内容撑开"的观感。
+const MAX_AUTO_COL_WIDTH = 1200;
+const MAX_EXPANDED_COL_WIDTH = 3000;
+
+// 临时解除宽度约束后测量真实内容宽度（cap 为该列的宽度上限）
+function measureUnconstrainedWidth(el: HTMLElement, cap: number): number {
   // 搜索高亮带 padding/border（padding:1px 5px + 1px 红框），参与测量会让列宽在检索时跳动 → 测量期间中和
   const hl = el.querySelector('.jg-search-cur, .jg-search-soft');
   if (hl) hl.classList.add('jg-search-nomeasure');
@@ -731,7 +770,7 @@ function measureUnconstrainedWidth(el: HTMLElement): number {
   el.style.minWidth = prev.minWidth;
   el.style.maxWidth = prev.maxWidth;
   el.style.overflow = prev.overflow;
-  return w;
+  return Math.min(w, cap);
 }
 
 // 从 DOM 测量实际列宽：顶层 flex 子节点（.grid-cell / .cell-expandable）
@@ -748,7 +787,7 @@ function measureColumnWidths(state: GridState, rowsEl: HTMLElement, numCols: num
   if (headerEl) {
     const headerCells = headerEl.children;
     for (let c = 0; c < headerCells.length && c < numCols; c++) {
-      const cellW = measureUnconstrainedWidth(headerCells[c] as HTMLElement);
+      const cellW = measureUnconstrainedWidth(headerCells[c] as HTMLElement, MAX_AUTO_COL_WIDTH);
       if (cellW > widths[c]) widths[c] = cellW;
     }
   }
@@ -761,7 +800,8 @@ function measureColumnWidths(state: GridState, rowsEl: HTMLElement, numCols: num
     for (let i = 0; i < row.children.length && col < numCols; i++) {
       const child = row.children[i] as HTMLElement;
       if (!child.classList.contains('grid-cell') && !child.classList.contains('cell-expandable')) continue;
-      const cellW = measureUnconstrainedWidth(child);
+      const cap = child.classList.contains('cell-expandable') ? MAX_EXPANDED_COL_WIDTH : MAX_AUTO_COL_WIDTH;
+      const cellW = measureUnconstrainedWidth(child, cap);
       if (cellW > widths[col]) widths[col] = cellW;
       col++;
     }
@@ -780,7 +820,9 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
   const parts: string[] = [];
 
   // flex 行：高度由内容撑开，列宽由 colWidths 对齐
-  parts.push('<div class="grid-row">');
+  // 折行超高降级的行加 grid-row-overflow 类，格子回到横向滚动
+  const overflowCls = state.overflowRows.has(actualIdx) ? ' grid-row-overflow' : '';
+  parts.push('<div class="grid-row' + overflowCls + '">');
 
   if (viewMode === 'array') {
     // 顶层数组路径用原始数据索引，与 getCellPath 一致（禁止 indexOf 首次命中）
@@ -807,12 +849,12 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
         parts.push(renderExpandableCell(val, expandKey, field, isExpanded, w, cellPath, searchCellClass(actualIdx, h), rowSelCls));
       } else {
         const { display, typeClass } = formatCell(val);
-        const truncated = truncateText(display);
+        const fitted = cellText(display);
         parts.push('<div class="grid-cell ' + typeClass + (navSelectedClass(state, cellPath, 'value') || rowSelCls) + '" style="flex:0 0 ' + w + 'px"'
           + ' data-row-idx="' + actualIdx + '" data-col-idx="' + h + '"'
           + ' data-json-path="' + escHtml(cellPath) + '" data-nav-target="value"'
-          + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
-          + '><span class="cell-text' + searchCellClass(actualIdx, h) + '">' + escHtml(truncated.text) + '</span></div>');
+          + (fitted.isLong ? ' title="' + escHtml(display) + '"' : '')
+          + '><span class="cell-text' + searchCellClass(actualIdx, h) + '">' + escHtml(fitted.text) + '</span></div>');
       }
     }
   } else {
@@ -829,15 +871,14 @@ function renderNormalRow(state: GridState, actualIdx: number, row: unknown, head
       const valW = state.colWidths[1] || 200;
       parts.push(renderExpandableCell(obj.val, expandKey, obj.key, isExpanded, valW, keyPath, searchCellClass(actualIdx, 1)));
     } else {
-      const display = obj.val === null ? 'null' : String(obj.val);
-      const truncated = truncateText(display);
+      const { display, typeClass } = formatCell(obj.val);
+      const fitted = cellText(display);
       const valW = state.colWidths[1] || 200;
-      const typeClass = obj.val === null ? 'type-null' : 'type-' + typeof obj.val;
       parts.push('<div class="grid-cell ' + typeClass + navSelectedClass(state, keyPath, 'value') + '" style="flex:0 0 ' + valW + 'px"'
         + ' data-row-idx="' + actualIdx + '" data-col-idx="1"'
         + ' data-json-path="' + escHtml(keyPath) + '" data-nav-target="value"'
-        + (truncated.shouldTruncate ? ' title="' + escHtml(display) + '"' : '')
-        + '><span class="cell-text' + searchCellClass(actualIdx, 1) + '">' + escHtml(truncated.text) + '</span></div>');
+        + (fitted.isLong ? ' title="' + escHtml(display) + '"' : '')
+        + '><span class="cell-text' + searchCellClass(actualIdx, 1) + '">' + escHtml(fitted.text) + '</span></div>');
     }
   }
   parts.push('</div>');
@@ -869,11 +910,16 @@ function renderExpandableCell(
     labelText = ' ' + escHtml(headerName) + ' {}';
   }
 
-  // 折叠：固定列宽对齐；展开：至少保持列宽，内容可撑开（table-in-cell）
+  // 折叠：固定列宽对齐；展开：顶层固定在列宽，内容宽出来的部分由
+  // .cell-expandable 的横向滚动条承载（不再无限撑开，否则 8KB 嵌套值能把整行
+  // 撑到 63k px，横向滚动条退化成一条线）。嵌套 table 内的展开格没有列宽概念，
+  // 保持原来"按内容撑开"。
   let styleAttr = '';
   if (isExpanded) {
     const minW = colWidth || 120;
-    styleAttr = ' style="flex:0 0 auto;min-width:' + minW + 'px"';
+    styleAttr = colWidth
+      ? ' style="flex:0 0 ' + minW + 'px;min-width:' + minW + 'px"'
+      : ' style="flex:0 0 auto;min-width:' + minW + 'px"';
   } else if (colWidth) {
     styleAttr = ' style="flex:0 0 ' + colWidth + 'px"';
   }
@@ -924,6 +970,18 @@ function renderNestedTable(val: unknown, expandPath: string, jsonPath: string): 
   return renderNestedObjectTable(val as Record<string, unknown>, expandPath, jsonPath);
 }
 
+// 嵌套表格叶子单元格：非展开的标量值
+function renderNestedLeafCell(
+  val: unknown,
+  childJson: string,
+  extraClass: string
+): string {
+  const { display, typeClass } = formatCell(val);
+  return '<td class="ov' + extraClass + '"'
+    + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
+    + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
+}
+
 function renderNestedObjectTable(val: Record<string, unknown>, expandPath: string, jsonPath: string): string {
   const keys = Object.keys(val);
   let html = '<table border="0" cellspacing="0" cellpadding="0" class="nested-grid-table">';
@@ -938,12 +996,7 @@ function renderNestedObjectTable(val: Record<string, unknown>, expandPath: strin
     if (isExpandable(cellVal)) {
       html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson, '') + '</td>';
     } else {
-      const display = cellVal === null ? 'null' : String(cellVal);
-      const truncated = truncateText(display);
-      const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
-      html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
-        + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-        + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+      html += renderNestedLeafCell(cellVal, childJson, navSelectedClass(currentGridState, childJson, 'value'));
     }
     html += '</tr>';
   }
@@ -967,12 +1020,7 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
       const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
       html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
     } else {
-      const display = item === null ? 'null' : String(item);
-      const truncated = truncateText(display);
-      const typeClass = item === null ? 'type-null' : 'type-' + typeof item;
-      html += '<td class="ov' + rowSelCls + '"'
-        + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-        + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+      html += renderNestedLeafCell(item, childJson, rowSelCls);
     }
     html += '</tr>';
   }
@@ -1015,12 +1063,7 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
         const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
         html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
       } else {
-        const display = cellVal === null ? 'null' : String(cellVal);
-        const truncated = truncateText(display);
-        const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
-        html += '<td class="ov' + (rowSelCls || navSelectedClass(currentGridState, childJson, 'value')) + '"'
-          + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
-          + '<span class="' + typeClass + '">' + escHtml(truncated.text) + '</span></td>';
+        html += renderNestedLeafCell(cellVal, childJson, rowSelCls || navSelectedClass(currentGridState, childJson, 'value'));
       }
     }
     html += '</tr>';
@@ -1123,6 +1166,15 @@ function escHtml(text: string): string {
   return d.innerHTML.replace(/"/g, '&quot;');
 }
 
+function isBigIntSentinel(s: string): boolean {
+  return s.length >= 4 && s.charCodeAt(0) === 1 && s.charCodeAt(s.length - 1) === 1 && s.charAt(1) === 'B' && s.charAt(2) === 'G';
+}
+
+function extractBigIntLiteral(s: string): string {
+  const idx = Number(s.slice(3, s.length - 1));
+  return bigIntLiterals[idx] || s;
+}
+
 function formatCell(val: unknown): { display: string; typeClass: string } {
   if (val === null || val === undefined) {
     return { display: val === null ? 'null' : '', typeClass: 'type-null' };
@@ -1134,14 +1186,18 @@ function formatCell(val: unknown): { display: string; typeClass: string } {
   if (type === 'object') {
     return { display: '{...}', typeClass: 'type-object' };
   }
+  // 大整数哨兵：显示为原始字面量，当数字类型显示
+  if (type === 'string' && isBigIntSentinel(val as string)) {
+    return { display: extractBigIntLiteral(val as string), typeClass: 'type-number' };
+  }
   return { display: String(val), typeClass: 'type-' + type };
 }
 
-function truncateText(text: string): { text: string; shouldTruncate: boolean } {
-  if (text.length > 80) {
-    return { text: text.slice(0, 77) + '\u2026', shouldTruncate: true };
-  }
-  return { text, shouldTruncate: false };
+// 长值不裁剪：全文留在格子里，宽度不够时由单元格自己的横向滚动条承载。
+// 固定行高的虚拟滚动不能把 8KB 字符串折成上百行，所以走滚动而不是折行。
+// isLong 只用来决定是否挂 title 提示，不参与显示内容。
+function cellText(text: string): { text: string; isLong: boolean } {
+  return { text: text, isLong: text.length > 80 };
 }
 
 // 展开全部：按当前可见行序列（filteredRows）生成与渲染一致的路径
@@ -1187,6 +1243,7 @@ export function expandAll(): void {
   // 展开后重测列宽/行高，保留 colWidths 作下限
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  currentGridState.overflowRows.clear();
   if (gridRerender) gridRerender();
 }
 
@@ -1197,6 +1254,7 @@ export function collapseAll(): void {
   resetColWidthsToEstimate(currentGridState);
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  currentGridState.overflowRows.clear();
   if (gridRerender) gridRerender();
 }
 
@@ -1275,6 +1333,7 @@ function applySortAndFilter(state: GridState): void {
   resetColWidthsToEstimate(state);
   state.measured = false;
   state.rowHeights = [];
+  state.overflowRows.clear();
 }
 
 // 更新表头排序指示器
@@ -1769,6 +1828,7 @@ export function onCellUpdated(newData: unknown): void {
   resetColWidthsToEstimate(currentGridState);
   currentGridState.measured = false;
   currentGridState.rowHeights = [];
+  currentGridState.overflowRows.clear();
   // 编辑改变了数据 → 重算搜索匹配与列头高亮，否则红框/计数停留在旧值上
   if (searchState) recomputeSearch();
   applySearchHeaderHighlight();

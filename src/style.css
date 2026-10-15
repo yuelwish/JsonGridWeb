@@ -1255,11 +1255,14 @@ body {
   width: 100%;
 }
 
+/* 行高/宽度走 renderVisibleRows 写入的 --table-w（列宽总和）。
+   不能写 min-width: max-content：单元格不再裁剪后，8KB 长值会让浏览器先算出
+   63k px 的固有宽度，整张表被撑爆。 */
 .virtual-grid-rows {
   position: absolute;
   left: 0;
   right: 0;
-  min-width: max-content;
+  min-width: var(--table-w, 100%);
 }
 
 /* 数据行：原站行高 38px，展开嵌套 table 后可增高；全白底无斑马纹（亮/暗均实测） */
@@ -1270,7 +1273,7 @@ body {
   font-size: 13.5px;
   line-height: 1.5;
   transition: background-color 0.12s ease;
-  min-width: max-content;
+  min-width: var(--table-w, 100%);
   min-height: 38px;
   height: auto;
 }
@@ -1279,16 +1282,48 @@ body {
   background: var(--hover-color);
 }
 
-/* 单元格：带右侧边框 */
+/* 单元格：带右侧边框。默认折行显示（white-space: pre-wrap），行高随内容增长。
+   折行高度超过安全上限时，JS 给该行加 .grid-row-overflow 类，降级回横向滚动。
+   text-overflow: clip 兼掉个别引擎在 overflow 非 visible 时仍画省略号的默认行为。
+   表头 .virtual-grid-header .grid-cell 特异性更高，仍走原来的省略号。 */
 .grid-cell {
   padding: 4px 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  overflow-x: hidden;
+  overflow-y: visible;
+  text-overflow: clip;
   flex: 0 0 auto;
   min-width: 0;
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
+  scrollbar-width: thin;
+}
+
+/* 折行超高降级：该行所有格子回到横向滚动，内容完整不裁剪 */
+.grid-row-overflow > .grid-cell {
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* 单元格内的横向滚动条压到 6px，长值行不会比普通行高出一大截 */
+.grid-cell::-webkit-scrollbar {
+  height: 6px;
+}
+
+.grid-cell::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.grid-cell::-webkit-scrollbar-thumb {
+  background: var(--grid-line-color);
+  border-radius: 3px;
+}
+
+.grid-cell::-webkit-scrollbar-thumb:hover {
+  background: var(--text-color);
 }
 
 /* 单元格最后一列去掉右边框 */
@@ -1456,7 +1491,9 @@ body {
   box-shadow: inset 0 0 0 1px #475569;
 }
 
-/* 可展开单元格：与 grid-cell 同级，作为 flex 列参与行布局 */
+/* 可展开单元格：与 grid-cell 同级，作为 flex 列参与行布局。
+   展开后的嵌套 table 按内容定宽（width:max-content），外层宽度固定，多出来的部分
+   由本单元格横向滚动承载——嵌套值同样不裁剪。 */
 .cell-expandable {
   cursor: pointer;
   display: flex;
@@ -1466,10 +1503,11 @@ body {
   padding: 4px 8px;
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: hidden;
   white-space: nowrap;
   min-width: 0;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
 }
 
 .cell-expandable:hover {
