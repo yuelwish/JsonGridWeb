@@ -1503,7 +1503,7 @@ body {
   padding: 4px 8px;
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
   white-space: nowrap;
   min-width: 0;
