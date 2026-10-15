@@ -982,8 +982,7 @@ function renderNestedObjectTable(val: Record<string, unknown>, expandPath: strin
     if (isExpandable(cellVal)) {
       html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, k, isExpanded, undefined, childJson, '') + '</td>';
     } else {
-      const display = cellVal === null ? 'null' : String(cellVal);
-      const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
+      const { display, typeClass } = formatCell(cellVal);
       html += '<td class="ov' + navSelectedClass(currentGridState, childJson, 'value') + '"'
         + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
         + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
@@ -1010,8 +1009,7 @@ function renderNestedSimpleArrayTable(arr: unknown[], expandPath: string, jsonPa
       const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
       html += '<td class="ov">' + renderExpandableCell(item, childExpand, '[' + i + ']', isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
     } else {
-      const display = item === null ? 'null' : String(item);
-      const typeClass = item === null ? 'type-null' : 'type-' + typeof item;
+      const { display, typeClass } = formatCell(item);
       html += '<td class="ov' + rowSelCls + '"'
         + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
         + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
@@ -1057,8 +1055,7 @@ function renderNestedObjectArrayTable(arr: Record<string, unknown>[], expandPath
         const isExpanded = currentGridState?.expandedCells.has(childExpand) === true;
         html += '<td class="ov">' + renderExpandableCell(cellVal, childExpand, h, isExpanded, undefined, childJson, '', rowSelCls) + '</td>';
       } else {
-        const display = cellVal === null ? 'null' : String(cellVal);
-        const typeClass = cellVal === null ? 'type-null' : 'type-' + typeof cellVal;
+        const { display, typeClass } = formatCell(cellVal);
         html += '<td class="ov' + (rowSelCls || navSelectedClass(currentGridState, childJson, 'value')) + '"'
           + ' data-json-path="' + escHtml(childJson) + '" data-nav-target="value">'
           + '<span class="' + typeClass + '">' + escHtml(display) + '</span></td>';
