@@ -548,6 +548,29 @@ function getChildren(val: unknown): ChildEntry[] {
   return [];
 }
 
+/**
+ * 编辑浮层要跟着单元格走：GRID 是虚拟滚动，滚动/重排后单元格的位置会变，
+ * 浮层是 position:fixed 的绝对坐标，不重新贴回就会留在原地（看着像偏上）。
+ * 每次重绘后调一次；没在编辑时零开销。
+ */
+function repositionEditor(): void {
+  if (currentEdit && currentGridState) {
+    const cell = findCell(currentGridState.rowsEl, currentEdit.rowIdx, currentEdit.colIdx);
+    if (cell) {
+      currentEdit.cell = cell;
+      alignEditorToCell(currentEdit.input, cell, cell.querySelector('.cell-text'));
+    }
+  }
+  if (currentNestedEdit && currentGridState) {
+    const sel = '.nested-grid-table [data-json-path="' + cssEscapeAttr(currentNestedEdit.pathKey) + '"][data-nav-target="value"]';
+    const cell = currentGridState.rowsEl.querySelector(sel) as HTMLElement | null;
+    if (cell) {
+      currentNestedEdit.cell = cell;
+      alignEditorToCell(currentNestedEdit.input, cell, cell.querySelector('span'), 80);
+    }
+  }
+}
+
 function renderVisibleRows(state: GridState, layoutPass = 0): void {
   const { headers, rowsEl, spacerEl, viewMode, container, filteredRows } = state;
   const totalDisplayRows = filteredRows.length;
@@ -602,6 +625,9 @@ function renderVisibleRows(state: GridState, layoutPass = 0): void {
   }
 
   rowsEl.innerHTML = parts.join('');
+
+  // 行重绘后单元格元素换了，编辑浮层得重新贴回新元素
+  repositionEditor();
 
   // 测量实际行高并更新缓存；高度剧变时同帧再校正可见窗口
   let heightChanged = false;
@@ -1589,11 +1615,130 @@ interface EditState {
   rowIdx: number;
   colIdx: number;
   oldValue: unknown;
-  input: HTMLInputElement;
+  input: HTMLTextAreaElement;
   cell: HTMLElement;
 }
 
 let currentEdit: EditState | null = null;
+
+/**
+ * 让编辑框里的文字落在原文字的位置上：view → edit 不发生上下跳动。
+ * 输入框挂在 body 下，拿不到 GRID 的字体继承（字号/字体/行高都得显式复刻）；
+ * 内容盒再对齐到原文字的行盒，浏览器把单行输入的文字顶对齐还是居中都一样。
+ */
+function alignEditorToCell(
+  input: HTMLTextAreaElement,
+  cell: HTMLElement,
+  textEl: Element | null,
+  minWidth = 0
+): void {
+  const cellRect = cell.getBoundingClientRect();
+  const cellCs = getComputedStyle(cell);
+  const inputCs = getComputedStyle(input);
+  const lineH = parseFloat(cellCs.lineHeight) || parseFloat(cellCs.fontSize) * 1.5 || 20;
+  const borderTop = parseFloat(inputCs.borderTopWidth) || 0;
+  const borderBottom = parseFloat(inputCs.borderBottomWidth) || 0;
+  const borderLeft = parseFloat(inputCs.borderLeftWidth) || 0;
+  const borderRight = parseFloat(inputCs.borderRightWidth) || 0;
+
+  input.style.left = cellRect.left + 'px';
+  input.style.top = cellRect.top + 'px';
+  input.style.width = Math.max(cellRect.width, minWidth) + 'px';
+  input.style.height = cellRect.height + 'px';
+
+  // 字体与单元格一致（输入框不在 .virtual-grid-wrapper 里，继承不到）
+  input.style.fontFamily = cellCs.fontFamily;
+  input.style.fontSize = cellCs.fontSize;
+  input.style.fontWeight = cellCs.fontWeight;
+  input.style.fontStyle = cellCs.fontStyle;
+  input.style.lineHeight = lineH + 'px';
+
+  // 文字顶对齐到原文字行盒顶：上边距 = 行盒顶 - 格顶 - 边框
+  const textRect = textEl ? textEl.getBoundingClientRect() : null;
+  const textIsInline = textEl ? getComputedStyle(textEl).display === 'inline' : false;
+  // 行盒顶：行内元素的 rect 是内容区（内容区在行盒内居中），要往上退半个行距差；
+  // 块级/弹性项的 rect 顶就是行盒顶
+  const lineBoxTop = textRect
+    ? (textIsInline ? textRect.top - (lineH - textRect.height) / 2 : textRect.top)
+    : cellRect.top + (parseFloat(cellCs.paddingTop) || 0);
+  const padTop = Math.max(0, lineBoxTop - cellRect.top - borderTop);
+  input.style.paddingTop = padTop + 'px';
+  input.style.paddingBottom = Math.max(0, cellRect.height - borderTop - borderBottom - padTop - lineH) + 'px';
+  // 左内缩对齐原文字左缘（输入框自带边框，扣掉边框宽）
+  const textLeft = textRect ? textRect.left : cellRect.left + (parseFloat(cellCs.paddingLeft) || 0);
+  input.style.paddingLeft = Math.max(0, textLeft - cellRect.left - borderLeft) + 'px';
+  input.style.paddingRight = Math.max(0, (parseFloat(cellCs.paddingRight) || 0) - borderRight) + 'px';
+}
+
+/**
+ * 选中高亮：浏览器把选中块画成字体内容盒（ascent+descent），字形坐基线上，
+ * 没降部的字（Test User）会紧贴块上沿、下方空出一截降部空间，看着像文字偏上；
+ * 块的形状由浏览器决定，收紧不了。改为在编辑框背景上自己画一条贴住字形的高亮带：
+ * canvas measureText 取字形的实际上下沿（actualBoundingBoxAscent/Descent），
+ * 原生块背景设透明，避免叠两块。
+ */
+let selMeasureCtx: CanvasRenderingContext2D | null = null;
+
+interface InkMetrics {
+  ascent: number;
+  descent: number;
+  width: number;
+  fontAscent: number;
+  emHeight: number;
+}
+
+function measureInk(text: string, font: string): InkMetrics {
+  if (!selMeasureCtx) {
+    const canvas = document.createElement('canvas');
+    selMeasureCtx = canvas.getContext ? canvas.getContext('2d') : null;
+  }
+  const ctx = selMeasureCtx;
+  if (!ctx) return { ascent: 0, descent: 0, width: 0, fontAscent: 0, emHeight: 0 };
+  ctx.font = font;
+  const m = ctx.measureText(text);
+  return {
+    ascent: m.actualBoundingBoxAscent,
+    descent: m.actualBoundingBoxDescent,
+    width: m.width,
+    fontAscent: m.fontBoundingBoxAscent,
+    emHeight: m.fontBoundingBoxAscent + m.fontBoundingBoxDescent
+  };
+}
+
+/** 在编辑框背景上画一条贴住字形的高亮带（原生选中块已设为透明） */
+function paintSelectionBand(ed: HTMLTextAreaElement): void {
+  const value = ed.value;
+  const selStart = ed.selectionStart || 0;
+  const selEnd = ed.selectionEnd || 0;
+  if (!value || selEnd <= selStart) {
+    ed.style.backgroundImage = 'none';
+    return;
+  }
+  const cs = getComputedStyle(ed);
+  const font = cs.font || (cs.fontSize + ' ' + cs.fontFamily);
+  const lineH = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+  const ink = measureInk(value, font);
+  if (!ink.emHeight) {
+    ed.style.backgroundImage = 'none';
+    return;
+  }
+  // 基线在内容盒内的位置：半行距 + 字体 ascent
+  const baseline = (lineH - ink.emHeight) / 2 + ink.fontAscent;
+  const padTop = parseFloat(cs.paddingTop) || 0;
+  const padLeft = parseFloat(cs.paddingLeft) || 0;
+  // background 的定位区默认是 padding box，渐变的 y 起点即 padding box 顶
+  const y0 = padTop + baseline - ink.ascent;
+  const y1 = padTop + baseline + ink.descent;
+  const pre = measureInk(value.substring(0, selStart), font).width;
+  const selW = measureInk(value.substring(selStart, selEnd), font).width;
+  ed.style.backgroundImage =
+    'linear-gradient(to bottom, transparent 0px, transparent ' + y0 + 'px, ' +
+    'var(--grid-editor-sel) ' + y0 + 'px, var(--grid-editor-sel) ' + y1 + 'px, ' +
+    'transparent ' + y1 + 'px)';
+  ed.style.backgroundSize = selW + 'px 100%';
+  ed.style.backgroundPosition = padLeft + pre - ed.scrollLeft + 'px 0';
+  ed.style.backgroundRepeat = 'no-repeat';
+}
 
 function startEditing(state: GridState, rowIdx: number, colIdx: number, cell: HTMLElement): void {
   // 取消之前的编辑
@@ -1612,32 +1757,32 @@ function startEditing(state: GridState, rowIdx: number, colIdx: number, cell: HT
     else oldValue = obj.val;
   }
 
-  // 创建 input
-  const input = document.createElement('input');
+  // 创建编辑框：用 textarea 而不是 input。Chrome 给 input 画的选中高亮是字体内容盒
+  // （ascent+descent），字形坐基线，没降部的字会紧贴高亮上沿、下方空一截降部空间，
+  // 看着像文字偏上；textarea 的选中高亮是行盒，和 GRID 单元格的行盒一致，
+  // 选中块里字是居中的，选中态也照常可见。
+  const input = document.createElement('textarea');
   input.className = 'grid-cell-editor';
+  input.rows = 1;
+  input.wrap = 'off';
   input.value = oldValue === null ? 'null' : oldValue === undefined ? '' : String(oldValue);
 
-  // 定位
-  const rect = cell.getBoundingClientRect();
+  // 定位（先入档再算：getComputedStyle 对未入档元素返回空值，边框宽会按 0 算，
+  // 框内文字就会整体偏 2px）
   input.style.position = 'fixed';
-  input.style.left = rect.left + 'px';
-  input.style.top = rect.top + 'px';
-  input.style.width = rect.width + 'px';
-  input.style.height = rect.height + 'px';
   input.style.zIndex = '1000';
 
-  // 类型感知
-  if (typeof oldValue === 'number') {
-    input.type = 'number';
-    input.step = 'any';
-  } else if (typeof oldValue === 'boolean') {
-    input.type = 'text';
-    input.value = String(oldValue);
-  }
+  // 类型感知：值的类型由 oldValue 决定，finishEditing 按旧类型回写，不用 input[type=number]
 
   document.body.appendChild(input);
+  alignEditorToCell(input, cell, cell.querySelector('.cell-text'));
   input.focus();
   input.select();
+  paintSelectionBand(input);
+  // 选中变化 / 输入 / 横向滚动后都要重画高亮带
+  input.addEventListener('select', () => paintSelectionBand(input));
+  input.addEventListener('input', () => paintSelectionBand(input));
+  input.addEventListener('scroll', () => paintSelectionBand(input));
 
   currentEdit = { rowIdx, colIdx, oldValue, input, cell };
 
@@ -1698,7 +1843,7 @@ function cancelEditing(): void {
 }
 
 /** 嵌套表内叶子值编辑：完成后按 data-json-path 全路径更新 */
-let currentNestedEdit: { input: HTMLInputElement; cell: HTMLElement; pathKey: string; oldValue: unknown } | null = null;
+let currentNestedEdit: { input: HTMLTextAreaElement; cell: HTMLElement; pathKey: string; oldValue: unknown } | null = null;
 
 function startNestedEditing(cell: HTMLElement, pathKey: string): void {
   if (currentNestedEdit) currentNestedEdit.input.remove();
@@ -1708,21 +1853,23 @@ function startNestedEditing(cell: HTMLElement, pathKey: string): void {
   const displayOld = (cell.textContent || '').trim();
   const segments = decodePathSegments(pathKey);
   const rawValue = resolvePathValue(currentGridState ? currentGridState.rows : null, segments);
-  const input = document.createElement('input');
+  const input = document.createElement('textarea');
   input.className = 'grid-cell-editor';
+  input.rows = 1;
+  input.wrap = 'off';
   input.value = displayOld;
 
-  const rect = cell.getBoundingClientRect();
   input.style.position = 'fixed';
-  input.style.left = rect.left + 'px';
-  input.style.top = rect.top + 'px';
-  input.style.width = Math.max(rect.width, 80) + 'px';
-  input.style.height = rect.height + 'px';
   input.style.zIndex = '1000';
 
   document.body.appendChild(input);
+  alignEditorToCell(input, cell, cell.querySelector('span'), 80);
   input.focus();
   input.select();
+  paintSelectionBand(input);
+  input.addEventListener('select', () => paintSelectionBand(input));
+  input.addEventListener('input', () => paintSelectionBand(input));
+  input.addEventListener('scroll', () => paintSelectionBand(input));
 
   currentNestedEdit = { input, cell, pathKey, oldValue: rawValue };
 

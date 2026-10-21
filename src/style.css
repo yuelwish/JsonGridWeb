@@ -1245,7 +1245,7 @@ body {
 
 /* 表头单元格 */
 .virtual-grid-header .grid-cell {
-  padding: 10px 12px;
+  padding: calc(10px + var(--grid-optical-shift)) 12px calc(10px - var(--grid-optical-shift));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1323,12 +1323,24 @@ body {
   background: var(--hover-color);
 }
 
+/* 视觉居中补偿：等宽字体的 ascent 比字形高，行盒居中时墨迹仍偏上 2~3px
+   （像素实测：墨迹中心比格心高 2.5~3px）。把上内边距多分 2px、下内边距少 2px，
+   墨迹才落到行的视觉中心。取值必须 < 4px，否则下内边距会算成负值。 */
+:root {
+  --grid-optical-shift: 2px;
+}
+
 /* 单元格：带右侧边框。默认折行显示（white-space: pre-wrap），行高随内容增长。
    折行高度超过安全上限时，JS 给该行加 .grid-row-overflow 类，降级回横向滚动。
    text-overflow: clip 兼掉个别引擎在 overflow 非 visible 时仍画省略号的默认行为。
-   表头 .virtual-grid-header .grid-cell 特异性更高，仍走原来的省略号。 */
+   表头 .virtual-grid-header .grid-cell 特异性更高，仍走原来的省略号。
+   垂直居中：行高由 min-height 撑到 38px 而文字只有 20px 高，块级布局会把文字
+   顶到行首（看着偏上）。改成 flex + align-items:center 等价于源站 table 的
+   vertical-align: middle，文字在行内居中。 */
 .grid-cell {
-  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  padding: calc(4px + var(--grid-optical-shift)) 8px calc(4px - var(--grid-optical-shift));
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-wrap: break-word;
@@ -1340,6 +1352,12 @@ body {
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
   scrollbar-width: thin;
+}
+
+/* flex 项默认 min-width:auto（不可缩到 min-content 以下），长单词会撑破格子而
+   不换行；放开后长值按 overflow-wrap 正常折行（长值不裁剪特性依赖这个）。 */
+.grid-cell > .cell-text {
+  min-width: 0;
 }
 
 /* 折行超高降级：该行所有格子回到横向滚动，内容完整不裁剪 */
@@ -1381,7 +1399,9 @@ body {
   flex: 0 0 56px !important;
   color: #656565;
   text-align: center;
-  padding: 4px 0;
+  /* 单元格改成 flex 容器后 text-align 不再管子项对齐，序号要靠 justify 居中 */
+  justify-content: center;
+  padding: calc(4px + var(--grid-optical-shift)) 0 calc(4px - var(--grid-optical-shift));
   font-size: 13px;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   border-right: 1px solid var(--grid-line-color);
@@ -1540,8 +1560,9 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: flex-start;
-  padding: 4px 8px;
+  /* 折叠态：标签在行内垂直居中（同 .grid-cell），否则会贴着行顶 */
+  justify-content: center;
+  padding: calc(4px + var(--grid-optical-shift)) 8px calc(4px - var(--grid-optical-shift));
   border-right: 1px solid var(--grid-line-color);
   box-sizing: border-box;
   overflow-x: hidden;
@@ -1549,6 +1570,16 @@ body {
   white-space: nowrap;
   min-width: 0;
   flex: 1 1 auto;
+}
+
+/* 展开态：标签贴顶，下方紧跟嵌套表（此时行高由嵌套表撑开，没有居中的余地） */
+.cell-expandable.is-open {
+  justify-content: flex-start;
+}
+
+/* 折叠态没有下方的表，标签的下边距只影响居中位置（会把文字顶高 2.5px） */
+.cell-expandable:not(.is-open) .plus-minus {
+  margin-bottom: 0;
 }
 
 .cell-expandable:hover {
@@ -1645,7 +1676,7 @@ body {
 
 .nested-grid-table td {
   border: 0.8px solid #ededed;
-  padding: 4px 5px;
+  padding: calc(4px + var(--grid-optical-shift)) 5px calc(4px - var(--grid-optical-shift));
   font-size: 13.5px;
   white-space: nowrap;
   vertical-align: top;
@@ -1746,7 +1777,7 @@ body {
 
 /* 对象属性值 (value) */
 .ov {
-  padding: 4px 5px;
+  padding: calc(4px + var(--grid-optical-shift)) 5px calc(4px - var(--grid-optical-shift));
   font-size: 13.5px;
   color: var(--text-color);
   vertical-align: middle;
@@ -1769,17 +1800,41 @@ body {
   border: 2px solid var(--primary-color);
   border-radius: 3px;
   padding: 4px 8px;
-  font-size: 13px;
-  font-family: inherit;
+  /* 字体与 GRID 单元格一致（输入框挂在 body 下，继承不到 .virtual-grid-wrapper），
+     字号/行高/内边距由 alignEditorToCell 按被编辑格子的实测量覆写 */
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13.5px;
   color: var(--text-color);
   background: var(--bg-color);
   outline: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   margin: 0;
+  /* border-box：height/width 指的是边框盒，否则输入框会比格子大一圈（边框+内边距） */
+  box-sizing: border-box;
+  /* textarea 默认行为要清掉：不能缩放、不能滚动、不能折行（折行会撑高格子） */
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  display: block;
 }
 
 .grid-cell-editor:focus {
   border-color: var(--primary-hover, #1d4ed8);
+}
+
+/* 原生选中块置透明：高亮改由编辑框背景自绘（paintSelectionBand），
+   那条带贴住字形，原生块（字体内容盒）会在字下方空出一截降部空间。 */
+.grid-cell-editor::selection {
+  background: transparent;
+}
+
+/* 自绘选中高亮带的颜色 */
+:root {
+  --grid-editor-sel: rgba(37, 99, 235, 0.20);
+}
+
+[data-theme="dark"] {
+  --grid-editor-sel: rgba(96, 165, 250, 0.28);
 }
 
 [data-theme="dark"] .grid-cell-editor {
