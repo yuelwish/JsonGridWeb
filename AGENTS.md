@@ -34,7 +34,8 @@ index.html
 | `src/grid.ts` | Grid 视图 | 虚拟滚动（OVERSCAN+固定行高）、嵌套展开、CSV 导出 |
 | `src/tree.ts` | 树形视图 | 递归 DOM 渲染，懒展开 |
 | `src/sample-data.ts` | 内置样例数据 | 样例按钮加载 |
-| `scripts/verify-compact.mjs` | 紧凑序列化回归 | 内嵌旧实现作逐字节参照，改 worker 后必跑（npm run verify） |
+| `src/scrollbar.ts` | 左侧编辑器自绘滚动条 | 拖拽映射基于按下瞬间的滚动范围快照（高度突变不影响映射）；宽度常量 `EDITOR_SCROLLBAR_WIDTH` 同时是搜索面板右缘偏移 |
+| `scripts/verify-*.mjs` | 回归检查（紧凑序列化 / 大整数 / 搜索快捷键 / 左侧滚动条） | 源码层代理断言，改对应模块后必跑；`npm run verify` 一次跑全部，CI 已接 |
 | `src/style.css` | 样式 | CSS 变量主题，响应式布局 |
 | `vite.config.ts` | 构建配置 | singleFile 插件，target: es2017 |
 | `tsconfig.json` | TS 配置 | strict 模式，target: ES2017 |
@@ -47,6 +48,9 @@ index.html
 - TypeScript strict 模式，禁止 `any` 泛滥（当前代码中有 `any`，逐步收敛）
 - Worker 代码是字符串模板，无类型检查，注意手动保证正确性
 - CSS 使用 CSS 变量（`--primary-color` 等），方便主题切换
+- 改第三方库（CodeMirror）的内部样式前，先读它的 baseTheme 确认依赖的不变量，
+  在注释里写明所依赖的那一条（如 `.cm-scroller` 的 flex 布局用于并排行号栏与内容），
+  并用 `npm run verify` 里的对应检查守住契约
 
 ### Worker 通信协议
 
@@ -66,8 +70,8 @@ index.html
 npm run build     # 产物 → dist/index.html（单文件）
 cp dist/index.html /var/www/html/   # nginx 部署
 
-# 紧凑格式化回归验证（改 worker 序列化器后必跑）
-node scripts/verify-compact.mjs
+# 回归验证（改 worker 序列化器、搜索面板、左侧滚动条后必跑）
+npm run verify
 
 # 核对产物体积红线（改动前后各跑一次做对比）
 gzip -c dist/index.html | wc -c
@@ -90,7 +94,6 @@ gzip -c dist/index.html | wc -c
 ### 中优先级
 
 - **文件上传/下载** - FileReader API + Blob URL 下载
-- **URL 参数** - `?json=...` 或 `?url=...` 支持
 - **搜索结果高亮** - 在编辑器中高亮匹配位置
 
 ### 低优先级
