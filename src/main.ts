@@ -8,6 +8,7 @@ import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { renderVirtualGrid, renderPanelMessage, expandAll, collapseAll, exportToCSV, getCellPath, onCellUpdated, decodePathKey, setSearchText, searchStep, getSearchInfo } from './grid';
 import { SAMPLE_JSON } from './sample-data';
+import { initEditorScrollbar, EDITOR_SCROLLBAR_WIDTH } from './scrollbar';
 
 // ========== Worker 管理 ==========
 let worker: Worker;
@@ -836,6 +837,10 @@ function initEditors() {
     ],
     parent: document.getElementById('editor-container')!
   });
+
+  // 自绘滚动条：原生滚动条在 CM6 修正文档总高度时会丢一次 mousemove，
+  // 拖拽位置因此滞后一拍。详见 scrollbar.ts。
+  initEditorScrollbar(inputEditor.scrollDOM);
 }
 
 function updateStats() {
@@ -877,22 +882,8 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
  */
 let searchPanelObserver: MutationObserver | null = null;
 
-/**
- * 测量浏览器垂直滚动条宽度（标准方法：创建溢出 div，测 offsetWidth - clientWidth）。
- * 某些系统（Linux overlay 滚动条）的 offsetWidth - clientWidth 返回 0，
- * 即使滚动条可见。此时回退到 15px 经验值。
- */
-function measureScrollbarWidth(): number {
-  const div = document.createElement('div');
-  div.style.cssText = 'position:absolute;top:-9999px;width:50px;height:50px;overflow:scroll;';
-  document.body.appendChild(div);
-  const w = div.offsetWidth - div.clientWidth;
-  document.body.removeChild(div);
-  return w > 0 ? w : 15;
-}
-
-// 模块加载时测量一次，滚动条宽度在会话期间基本不变
-const SCROLLBAR_WIDTH = measureScrollbarWidth();
+/** 编辑器内容区右缘距 .cm-editor 右缘的距离：自绘滚动条宽度（见 scrollbar.ts） */
+const SCROLLBAR_WIDTH = EDITOR_SCROLLBAR_WIDTH;
 
 /**
  * 定位编辑器搜索面板：悬浮于 JSON 编辑器内容区右上角。

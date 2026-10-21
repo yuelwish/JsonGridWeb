@@ -672,6 +672,47 @@ body {
 
 .cm-editor .cm-scroller {
   overflow: auto;
+  /* 左侧自绘滚动条（见 scrollbar.ts）：原生滚动条在 scrollHeight 突变时会丢
+     一次 mousemove，拖拽位置滞后一拍。原生滚动条隐藏，滚轮/键盘滚动照常。 */
+  scrollbar-width: none;
+  padding-right: 12px;
+}
+
+.cm-editor .cm-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.cm-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  background: var(--bg-color);
+  z-index: 5;
+}
+
+.cm-scrollbar-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-radius: 6px;
+  background: #cbd5e1;
+  border: 2px solid var(--bg-color);
+}
+
+.cm-scrollbar-thumb:hover,
+.cm-scrollbar-thumb--active {
+  background: #94a3b8;
+}
+
+[data-theme="dark"] .cm-scrollbar-thumb {
+  background: #475569;
+}
+
+[data-theme="dark"] .cm-scrollbar-thumb:hover,
+[data-theme="dark"] .cm-scrollbar-thumb--active {
+  background: #64748b;
 }
 
 /* 光标：真正隐形的是CodeMirror 绘制的 .cm-cursor 层。
