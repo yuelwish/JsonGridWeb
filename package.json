@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "verify": "node scripts/verify-compact.mjs && node scripts/verify-bigint.mjs && node scripts/verify-search-keymap.mjs && node scripts/verify-scrollbar.mjs",
+    "verify": "node scripts/verify-compact.mjs && node scripts/verify-bigint.mjs && node scripts/verify-search-keymap.mjs && node scripts/verify-search-scroll.mjs && node scripts/verify-scrollbar.mjs",
     "verify:search": "node scripts/verify-search-keymap.mjs",
-    "verify:scrollbar": "node scripts/verify-scrollbar.mjs"
+    "verify:scrollbar": "node scripts/verify-scrollbar.mjs",
+    "verify:search-scroll": "node scripts/verify-search-scroll.mjs"
   },
   "devDependencies": {
     "typescript": "~5.8.2",

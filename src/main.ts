@@ -9,6 +9,7 @@ import { tags as t } from '@lezer/highlight';
 import { renderVirtualGrid, renderPanelMessage, expandAll, collapseAll, exportToCSV, getCellPath, onCellUpdated, decodePathKey, setSearchText, searchStep, getSearchInfo } from './grid';
 import { SAMPLE_JSON } from './sample-data';
 import { initEditorScrollbar, EDITOR_SCROLLBAR_WIDTH } from './scrollbar';
+import { searchMatchScroll, clearSearchQuery } from './search-scroll';
 
 // ========== Worker 管理 ==========
 let worker: Worker;
@@ -809,6 +810,9 @@ function initEditors() {
       // basicSetup 之前；scripts/verify-search-keymap.mjs 会守住这个次序。
       keymap.of([{ key: 'Mod-f', run: () => { openEditorSearch(); return true; } }]),
       basicSetup,
+      // 接管匹配滚动：视口之外的匹配不再被顶到视口顶端（首个居中，后续从底缘揭示）。
+      // 落点与揭示逻辑独立在 search-scroll.ts（见 docs/adr/0002-search-match-reveal-scroll.md）。
+      searchMatchScroll,
       // 超宽行自动折行显示（issue #4）。软换行：逻辑行数、行号、文档内容均不变，
       // 仅显示层在超出编辑器可视宽度时折行。短行视觉零变化。
       EditorView.lineWrapping,
@@ -1061,6 +1065,10 @@ function openEditorSearch() {
   // state 里，面板重建时会从 state 恢复，导致用户看到旧查询）。
   const searchField = document.querySelector('input[name=search]') as HTMLInputElement | null;
   if (searchField) searchField.value = '';
+  // 搜索状态提前存在后（见 search-scroll.ts），openSearchPanel 会用当前选中文本
+  // 预填查询：只清输入框的可见值会留下「框里空着、编辑器却按选中文本高亮」的
+  // 错位，所以连 state 里的查询一起清空。
+  clearSearchQuery(inputEditor);
 }
 
 // ========== 主题切换 ==========
