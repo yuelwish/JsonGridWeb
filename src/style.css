@@ -810,16 +810,16 @@ body {
 
 
 
-/* ===== 搜索面板：逐项复刻原站 Ace searchbox ===== */
-/* 原站通过 CSS 变量做主题：浅色 #d4d4d4/#343434，暗色 #3d3d3d/#d6d6d6；暗色下仅面板配色变化，输入框与按钮保持白底 */
-/* 定位：ace_search.right = right:0 锚定 + shrink-to-fit（约 371px），由 main.ts 设 fixed top/left 实现 */
+/* ===== 搜索面板 ===== */
+/* 浅色逐项复刻原站 Ace searchbox（#d4d4d4/#343434）；暗色为现代卡片式，见文末暗色段 */
+/* 定位：ace_search.right = right:0 锚定 + shrink-to-fit（约 371px），由 main.ts 设 absolute right 实现 */
 :root {
   --jg-search-bg: #d4d4d4;
   --jg-search-color: #343434;
 }
 
 [data-theme="dark"] {
-  --jg-search-bg: #3d3d3d;
+  --jg-search-bg: #2d2d2d;
   --jg-search-color: #d6d6d6;
 }
 
@@ -1017,10 +1017,151 @@ body {
   padding: 0 8px;
 }
 
-/* 暗色主题：与原站一致，仅面板底色/文字色变化 */
+/* 暗色主题：现代卡片式。浮层圆角卡片、深色输入框、主题蓝强调；
+   浅色模式保持原站 Ace 复刻样式（上方各段白底硬编码即为浅色值）。
+   CM6 从未设置 darkTheme facet，.cm-panels 恒走 &light：#f5f5f5 底 + #ddd 底边框，
+   暗色卡片需要透明容器，否则卡片外露一圈浅灰 */
+[data-theme="dark"] #editor-container .cm-panels {
+  background: transparent;
+}
+
+[data-theme="dark"] #editor-container .cm-panels-top {
+  border-bottom: none;
+}
+
 [data-theme="dark"] #editor-container .cm-panel.cm-search {
   background: var(--jg-search-bg);
   color: var(--jg-search-color);
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5), 0 0 0 1px #4a4a4a;
+  padding: 12px;
+  /* 浮层：面板在 .cm-panels 内用外边距与编辑器顶缘、滚动条拉开距离 */
+  margin: 12px 14px 0 0;
+}
+
+/* 输入框：深底浅字，聚焦主题蓝描边 + 柔和光圈 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search input[name=search],
+[data-theme="dark"] #editor-container .cm-panel.cm-search input[name=replace] {
+  background-color: #222222;
+  color: #d6d6d6;
+  caret-color: #60a5fa;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  height: 30px;
+  line-height: 30px;
+  padding: 0 10px;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search input[name=search] {
+  /* 放大镜图标（与编辑器内搜索语义呼应），图标色 #8a8a8a */
+  padding-left: 32px;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="%238a8a8a" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>');
+  background-repeat: no-repeat;
+  background-position: 10px center;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search input[name=search]:focus,
+[data-theme="dark"] #editor-container .cm-panel.cm-search input[name=replace]:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+  outline: 0;
+}
+
+/* 行间距：卡片内行距 8px，行内按钮间隔 6px */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-search-form,
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-replace-form {
+  margin-bottom: 8px;
+  line-height: normal;
+  gap: 6px;
+}
+
+/* 按钮：透明底幽灵样式，浅色段的连体白底在这里全部推翻 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .cm-button {
+  height: 32px;
+  padding: 0 10px;
+  background: transparent;
+  color: #c0c0c0;
+  border: none;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .cm-button:hover {
+  background: #3a3a3a;
+}
+
+/* 浅色段的「行尾按钮右边框 + 圆角」在卡片里不存在 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-search-form button:last-child,
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-replace-form button:last-child {
+  border-radius: 7px;
+  border-right: none;
+}
+
+/* 搜索行 All：主题蓝文字按钮（次强调） */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-search-form button[name=select] {
+  color: #60a5fa;
+}
+
+/* 替换行 All（Replace All）：主题蓝实心，唯一的主操作 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-replace-form button[name=replaceAll] {
+  background: #60a5fa;
+  color: #16283c;
+  font-weight: bold;
+  padding: 0 12px;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-replace-form button[name=replaceAll]:hover {
+  background: #93bbfc;
+}
+
+/* 导航箭头颜色随主题 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search button[name=prev]::after,
+[data-theme="dark"] #editor-container .cm-panel.cm-search button[name=next]::after {
+  border-color: #999999;
+}
+
+/* 关闭 ×：对齐行中心，落在搜索行预留的右侧空档里（搜索行 margin-right 20px 不动） */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-search-close {
+  top: 20px;
+  right: 12px;
+  color: #999999;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-search-close:hover {
+  background-color: #999999;
+  color: #2d2d2d;
+}
+
+/* 选项钮：半透明白描边，选中态主题蓝 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-opt {
+  color: #c0c0c0;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-opt:hover {
+  background-color: #3a3a3a;
+  opacity: 1;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-opt:active {
+  background-color: #333333;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-opt.jg-opt-checked {
+  border-color: #60a5fa;
+  opacity: 1;
+}
+
+/* 计数器与无匹配红框随主题 */
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-search-counter {
+  color: #999999;
+}
+
+[data-theme="dark"] #editor-container .cm-panel.cm-search .jg-nomatch {
+  outline: 1px solid var(--error-color);
 }
 
 /* Search highlight */

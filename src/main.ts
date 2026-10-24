@@ -902,7 +902,7 @@ const SCROLLBAR_WIDTH = EDITOR_SCROLLBAR_WIDTH;
 /**
  * 定位编辑器搜索面板：悬浮于 JSON 编辑器内容区右上角。
  *
- * 样式对齐原站 Ace searchbox（背景、边框、圆角、按钮、间距），
+ * 样式：浅色复刻原站 Ace searchbox，暗色为现代卡片式（见 style.css 搜索面板段），
  * 但右缘锚定内容区右缘（right = 滚动条宽度），不盖滚动条。
  * 用 absolute 定位（相对 .cm-editor），编辑器宽度变化时浏览器自动重排。
  */
