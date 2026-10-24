@@ -989,6 +989,7 @@ function customizeSearchPanel() {
   plusBtn.addEventListener('click', () => {
     const show = replaceRow.style.display === 'none';
     replaceRow.style.display = show ? '' : 'none';
+    plusBtn.textContent = show ? '-' : '+'; // 展开替换行时 + 变 -，对齐 Ace searchbox
   });
   optRow.appendChild(plusBtn);
 
