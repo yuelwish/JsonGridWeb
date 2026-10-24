@@ -757,13 +757,16 @@ body {
   background: rgba(241, 245, 249, 0.5);
 }
 
-/* 选中背景：原站 Ace dawn rgba(39,95,255,0.30)，暗色 idle-fingers rgba(90,100,126,0.88) */
+/* 选中背景：原站 Ace dawn rgba(39,95,255,0.30)。
+   暗色原照抄 idle-fingers rgba(90,100,126,0.88)，近乎不透明：
+   搜索 All 全选匹配时选区铺满匹配块，蓝色文字（#6c99bb）垫在蓝灰底上不可读，
+   降为半透明让文字透出 */
 .cm-editor .cm-selectionBackground {
   background: rgba(39, 95, 255, 0.30) !important;
 }
 
 [data-theme="dark"] .cm-editor .cm-selectionBackground {
-  background: rgba(90, 100, 126, 0.88) !important;
+  background: rgba(90, 110, 150, 0.42) !important;
 }
 
 .cm-editor .cm-gutters {
@@ -1173,9 +1176,11 @@ body {
   box-shadow: inset 0 0 0 1.5px rgba(148, 187, 233, 0.45);
 }
 
-/* 选中项：同一蓝框语言，加粗到 2px 并垫 25% 蓝底，亮而不盖字 */
+/* 选中项：同一蓝框语言，加粗到 2px。
+   不另垫底——命中时编辑器选区本身会落在匹配上，选区背景就是垫底，
+   再叠一层会盖住文字（All 全选时尤其明显） */
 [data-theme="dark"] #editor-container .cm-searchMatch-selected {
-  background: rgba(96, 165, 250, 0.25);
+  background: transparent;
   border-radius: 2px;
   box-shadow: inset 0 0 0 2px rgba(124, 179, 251, 0.9);
 }
