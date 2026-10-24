@@ -1168,21 +1168,26 @@ body {
 /* Search highlight：CodeMirror 实际输出类名为 cm-searchMatch（连写）。
    旧规则误写为 cm-search-match 从未生效，暗色下的琥珀块其实是 CM &light
    默认色（#ffff0054）与选中叠加（#ff6a0054）的结果，发浑；
-   此处按真实类名重定义。浅色未定义即沿用 CM 默认。 */
-/* 候选项：浅蓝空心描边，不填充、不改字色 */
+   此处按真实类名重定义。浅色未定义即沿用 CM 默认。
+   暗色采用 VS Code/JetBrains 式不透明实底：半透明层叠会随 active line、
+   选区背景等组合变化，文字对比度不可控（ui-ux-pro-max color-dark-mode：
+   暗色用去饱和色调变体，文字对比度单独验证）。 */
+/* 候选项：比编辑器底亮一级的去饱和蓝灰台阶，字色原样保留 */
 [data-theme="dark"] #editor-container .cm-searchMatch {
-  background: transparent;
+  background: #414d61;
   border-radius: 2px;
-  box-shadow: inset 0 0 0 1.5px rgba(148, 187, 233, 0.45);
 }
 
-/* 选中项：同一蓝框语言，加粗到 2px。
-   不另垫底——命中时编辑器选区本身会落在匹配上，选区背景就是垫底，
-   再叠一层会盖住文字（All 全选时尤其明显） */
+/* 选中项：更亮一级的蓝灰，文字提近白（mark 内嵌语法 span，需一并覆盖），
+   对比度约 5.6:1；不透明底同时盖住其下的选区背景与 active line */
 [data-theme="dark"] #editor-container .cm-searchMatch-selected {
-  background: transparent;
+  background: #4a6389;
   border-radius: 2px;
-  box-shadow: inset 0 0 0 2px rgba(124, 179, 251, 0.9);
+}
+
+[data-theme="dark"] #editor-container .cm-searchMatch-selected,
+[data-theme="dark"] #editor-container .cm-searchMatch-selected span {
+  color: #eef4fc;
 }
 
 /* GridSync 导航高亮（左侧编辑器） */
