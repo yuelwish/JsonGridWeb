@@ -1,6 +1,6 @@
 import './style.css';
 import { EditorView, basicSetup } from 'codemirror';
-import { openSearchPanel } from '@codemirror/search';
+import { openSearchPanel, searchPanelOpen, setSearchQuery } from '@codemirror/search';
 import { Decoration, ViewPlugin, keymap } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
@@ -9,6 +9,8 @@ import { tags as t } from '@lezer/highlight';
 import { renderVirtualGrid, renderPanelMessage, expandAll, collapseAll, exportToCSV, getCellPath, onCellUpdated, decodePathKey, setSearchText, searchStep, getSearchInfo } from './grid';
 import { SAMPLE_JSON } from './sample-data';
 import { initEditorScrollbar, EDITOR_SCROLLBAR_WIDTH } from './scrollbar';
+import { searchMatchScroll, clearSearchQuery } from './search-scroll';
+import { editorMatchInfo } from './search-count';
 
 // ========== Worker 管理 ==========
 let worker: Worker;
@@ -809,6 +811,20 @@ function initEditors() {
       // basicSetup 之前；scripts/verify-search-keymap.mjs 会守住这个次序。
       keymap.of([{ key: 'Mod-f', run: () => { openEditorSearch(); return true; } }]),
       basicSetup,
+      // 接管匹配滚动：视口之外的匹配不再被顶到视口顶端（首个居中，后续从底缘揭示）。
+      // 落点与揭示逻辑独立在 search-scroll.ts（见 docs/adr/0002-search-match-reveal-scroll.md）。
+      searchMatchScroll,
+      // 搜索面板打开时刷新计数：计数来自文档（search-count.ts），
+      // 不用 MutationObserver 数已渲染的高亮 span。
+      EditorView.updateListener.of((update) => {
+        if (!searchPanelOpen(update.state)) return;
+        const queryChanged = update.transactions.some(tr =>
+          tr.effects.some(e => e.is(setSearchQuery))
+        );
+        // 选区变化（按「下一个」）走缓存即时刷新；查询或文档变了要全篇重扫，
+        // 连续输入时防抖合并，避免大文档每个按键扫一遍。
+        scheduleSearchCounter(!update.docChanged && !queryChanged);
+      }),
       // 超宽行自动折行显示（issue #4）。软换行：逻辑行数、行号、文档内容均不变，
       // 仅显示层在超出编辑器可视宽度时折行。短行视觉零变化。
       EditorView.lineWrapping,
@@ -880,8 +896,6 @@ function setStatus(msg: string, type: 'info' | 'success' | 'error' = 'info') {
  * - 按钮顺序、文案、CSS 画箭头、悬停/选中态、无匹配红框全部对齐原站
  * - 关闭 × 绝对定位右上角；面板贴内容区右上角锚定、宽度收缩到自然宽（约 371px，同原站）
  */
-let searchPanelObserver: MutationObserver | null = null;
-
 /** 编辑器内容区右缘距 .cm-editor 右缘的距离：自绘滚动条宽度（见 scrollbar.ts） */
 const SCROLLBAR_WIDTH = EDITOR_SCROLLBAR_WIDTH;
 
@@ -1015,35 +1029,48 @@ function customizeSearchPanel() {
   // 定位（锚定 JSON 编辑器内容区右上角、窗口缩放时重新锚定）见 positionSearchPanel。
   positionSearchPanel();
 
-  // 计数器与无匹配红框：监听编辑器匹配高亮变化（节流，避免滚动重绘风暴）
-  if (searchPanelObserver) searchPanelObserver.disconnect();
-  let counterPending = false;
-  const updateCounter = () => {
-    const current = document.querySelector('.cm-panel.cm-search');
-    if (!current) {
-      searchPanelObserver!.disconnect();
-      searchPanelObserver = null;
-      return;
-    }
-    const matches = Array.from(document.querySelectorAll('#editor-container .cm-searchMatch'));
-    const sel = document.querySelector('#editor-container .cm-searchMatch-selected');
-    let idx = sel ? matches.indexOf(sel) + 1 : 0;
-    if (idx === 0 && matches.length > 0) idx = 1;
-    const c = current.querySelector('.jg-search-counter');
-    if (c) c.textContent = idx + ' of ' + matches.length;
-    const form = current.querySelector('.jg-search-form');
-    if (form) {
-      const q = (current.querySelector('input[name=search]') as HTMLInputElement | null)?.value || '';
-      form.classList.toggle('jg-nomatch', q.length > 0 && matches.length === 0);
-    }
-  };
-  searchPanelObserver = new MutationObserver(() => {
-    if (counterPending) return;
-    counterPending = true;
-    setTimeout(() => { counterPending = false; updateCounter(); }, 150);
-  });
-  // CM 渲染搜索高亮是新增装饰 span（childList）+ class 标记，两类都要监听
-  searchPanelObserver.observe(document.getElementById('editor-container')!, { subtree: true, attributes: true, attributeFilter: ['class'], childList: true });
+  // 计数器的首次填充；后续变化由 initEditors 里的 updateListener 驱动（见 updateSearchCounter）。
+  updateSearchCounter();
+}
+
+/** 计数刷新的防抖计时器（undefined 表示没有待执行） */
+let searchCounterTimer: number | undefined;
+
+/**
+ * 安排一次计数刷新。
+ *
+ * @param immediate 选区变化时为 true（走缓存，代价可忽略）；
+ *                  查询或文档变化时为 false，全篇重扫要防抖，别让连续输入把主线程拖住。
+ */
+function scheduleSearchCounter(immediate: boolean) {
+  if (searchCounterTimer !== undefined) {
+    window.clearTimeout(searchCounterTimer);
+    searchCounterTimer = undefined;
+  }
+  if (immediate) {
+    updateSearchCounter();
+    return;
+  }
+  searchCounterTimer = window.setTimeout(() => {
+    searchCounterTimer = undefined;
+    updateSearchCounter();
+  }, 120);
+}
+
+/**
+ * 刷新搜索面板的匹配计数与「无匹配」红框。
+ *
+ * 计数取自文档遍历（src/search-count.ts），不数已渲染的高亮 span：高亮只为视口
+ * 区域渲染，数 DOM 会让同一个查询先报「1 of 1」、按一次「下一个」变成「1 of 9」。
+ */
+function updateSearchCounter() {
+  const panel = document.querySelector('.cm-panel.cm-search');
+  if (!panel) return;
+  const info = editorMatchInfo(inputEditor.state);
+  const counter = panel.querySelector('.jg-search-counter');
+  if (counter) counter.textContent = info.index + ' of ' + info.total;
+  const form = panel.querySelector('.jg-search-form');
+  if (form) form.classList.toggle('jg-nomatch', info.hasQuery && info.total === 0);
 }
 
 /**
@@ -1061,6 +1088,10 @@ function openEditorSearch() {
   // state 里，面板重建时会从 state 恢复，导致用户看到旧查询）。
   const searchField = document.querySelector('input[name=search]') as HTMLInputElement | null;
   if (searchField) searchField.value = '';
+  // 搜索状态提前存在后（见 search-scroll.ts），openSearchPanel 会用当前选中文本
+  // 预填查询：只清输入框的可见值会留下「框里空着、编辑器却按选中文本高亮」的
+  // 错位，所以连 state 里的查询一起清空。
+  clearSearchQuery(inputEditor);
 }
 
 // ========== 主题切换 ==========
